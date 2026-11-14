@@ -94,3 +94,24 @@ class FakeLlm:
                 ToolCallDelta(index=i, id=f"call_{i}", name=name, arguments=args)
                 for i, (name, args) in enumerate(step)
             ])
+
+
+async def _fake_login(self, email, password):
+    from support_agent.store.client import StoreAuthError
+
+    if (email, password) != ("rahim@example.com", "Demo1234!"):
+        raise StoreAuthError("The email or the password is wrong.")
+    return "tok"
+
+
+async def _fake_get_customer(self, token):
+    return RAHIM
+
+
+FakeStore.login = _fake_login
+FakeStore.get_customer = _fake_get_customer
+
+
+class FakeModels:
+    async def list_models(self):
+        return ["qwen3.5:4b", "other:7b"]
