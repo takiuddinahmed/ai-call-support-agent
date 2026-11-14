@@ -11,6 +11,8 @@ from support_agent.store.models import (
     OrderItem,
     OrderView,
     Product,
+    Quote,
+    QuoteLine,
     TrackingStep,
     TrackingView,
     Variant,
@@ -28,6 +30,14 @@ class StoreError(Exception):
 
 class StoreAuthError(StoreError):
     pass
+
+
+ZONE_OPTION_NAMES = {"inside_dhaka": "Inside Dhaka", "outside_dhaka": "Outside Dhaka"}
+
+
+def shipping_zone_for_city(city: str) -> str:
+    """Same rule as the store: Dhaka (any case, trimmed) is inside, other cities outside."""
+    return "inside_dhaka" if city.strip().lower() == "dhaka" else "outside_dhaka"
 
 
 def _bdt(amount) -> int:
@@ -222,3 +232,105 @@ class StoreClient:
             return None
         response.raise_for_status()
         return _tracking(response.json()["tracking"])
+
+    # Quotes and orders
+
+    async def _variant_index(self) -> dict[str, tuple[Product, Variant]]:
+        return {v.id: (p, v) for p in await self.list_products() for v in p.variants}
+
+    async def _shipping_option(self, cart_id: str, city: str) -> tuple[str, str, int]:
+        """Returns (option ID, name, fee) of the delivery option for the city."""
+        zone = shipping_zone_for_city(city)
+        data = await self._request("GET", "/store/shipping-options", params={"cart_id": cart_id})
+        for option in data["shipping_options"]:
+            if (option.get("data") or {}).get("zone") == zone:
+                return option["id"], option["name"], _bdt(option.get("amount"))
+        raise StoreError(f"The store has no delivery option for {city}.")
+
+    async def _new_cart(self, city: str, token: str | None = None, **extra) -> str:
+        body = {
+            "region_id": await self.region_id(),
+            "shipping_address": {"city": city.strip(), "country_code": "bd"},
+            **extra,
+        }
+        return (await self._request("POST", "/store/carts", token, json=body))["cart"]["id"]
+
+    async def quote(self, items: list[tuple[str, int]], city: str) -> Quote:
+        index = await self._variant_index()
+        lines = []
+        for variant_id, quantity in items:
+            if variant_id not in index:
+                raise StoreError(f"No product variant has the ID {variant_id}.")
+            product, variant = index[variant_id]
+            if quantity > variant.stock:
+                raise StoreError(
+                    f"{product.title} ({variant.title}) has only {variant.stock} in stock."
+                )
+            lines.append(
+                QuoteLine(
+                    variant_id=variant_id,
+                    product_title=product.title,
+                    variant_title=variant.title,
+                    quantity=quantity,
+                    unit_price_bdt=variant.price_bdt,
+                    line_total_bdt=variant.price_bdt * quantity,
+                )
+            )
+        cart_id = await self._new_cart(city)
+        _, option_name, fee = await self._shipping_option(cart_id, city)
+        subtotal = sum(line.line_total_bdt for line in lines)
+        return Quote(lines, option_name, fee, subtotal, subtotal + fee)
+
+    async def place_order(
+        self, items: list[tuple[str, int]], address: Address, email: str, token: str | None
+    ) -> OrderView:
+        shipping_address = {
+            "first_name": address.first_name,
+            "last_name": address.last_name,
+            "address_1": address.address_1,
+            "city": address.city.strip(),
+            "postal_code": address.postal_code,
+            "phone": address.phone,
+            "country_code": address.country_code,
+        }
+        cart_id = (
+            await self._request(
+                "POST",
+                "/store/carts",
+                token,
+                json={
+                    "region_id": await self.region_id(),
+                    "email": email,
+                    "shipping_address": shipping_address,
+                    "billing_address": shipping_address,
+                },
+            )
+        )["cart"]["id"]
+        for variant_id, quantity in items:
+            await self._request(
+                "POST",
+                f"/store/carts/{cart_id}/line-items",
+                token,
+                json={"variant_id": variant_id, "quantity": quantity},
+            )
+        option_id, _, _ = await self._shipping_option(cart_id, address.city)
+        await self._request(
+            "POST", f"/store/carts/{cart_id}/shipping-methods", token, json={"option_id": option_id}
+        )
+        collection = (
+            await self._request("POST", "/store/payment-collections", token, json={"cart_id": cart_id})
+        )["payment_collection"]
+        await self._request(
+            "POST",
+            f"/store/payment-collections/{collection['id']}/payment-sessions",
+            token,
+            json={"provider_id": "pp_system_default"},
+        )
+        result = await self._request("POST", f"/store/carts/{cart_id}/complete", token)
+        if result.get("type") != "order":
+            raise StoreError((result.get("error") or {}).get("message", "The order failed."))
+        self._products = None  # stock changed
+        order = await self.lookup_order(result["order"]["display_id"], email, None)
+        if order is None:
+            raise StoreError("The store created the order, but the lookup did not find it.")
+        return order

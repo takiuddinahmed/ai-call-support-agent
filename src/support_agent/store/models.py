@@ -86,3 +86,22 @@ class Customer:
     last_name: str
     phone: str | None
     default_address: Address | None
+
+
+@dataclass
+class QuoteLine:
+    variant_id: str
+    product_title: str
+    variant_title: str
+    quantity: int
+    unit_price_bdt: int
+    line_total_bdt: int
+
+
+@dataclass
+class Quote:
+    lines: list[QuoteLine]
+    shipping_option: str
+    shipping_bdt: int
+    subtotal_bdt: int
+    total_bdt: int
