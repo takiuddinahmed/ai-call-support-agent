@@ -1,13 +1,20 @@
 [project]
 name = "support-agent"
 version = "0.1.0"
-description = "Add your description here"
+description = "Local AI customer support agent for the demo store"
 readme = "README.md"
 authors = [
     { name = "Takiuddin Ahmed", email = "takiuddinahmed@gmail.com" }
 ]
 requires-python = ">=3.13"
-dependencies = []
+dependencies = [
+    "fastapi>=0.163.0",
+    "httpx>=0.28.1",
+    "openai>=3.51.0",
+    "pydantic-settings>=2.16.3",
+    "pyyaml>=6.0.3",
+    "uvicorn[standard]>=0.54.0",
+]
 
 [project.scripts]
 support-agent = "support_agent:main"
@@ -15,3 +22,21 @@ support-agent = "support_agent:main"
 [build-system]
 requires = ["uv_build>=0.13.6,<0.14.0"]
 build-backend = "uv_build"
+
+[dependency-groups]
+dev = [
+    "pytest>=9.2.0",
+    "pytest-asyncio>=1.5.0",
+    "ruff>=0.17.5",
+]
+
+[tool.pytest.ini_options]
+asyncio_mode = "auto"
+testpaths = ["tests"]
+markers = [
+    "store: needs the live demo store at localhost:9000",
+    "llm: needs the live Ollama model server",
+]
+
+[tool.ruff]
+line-length = 100
