@@ -1,0 +1,72 @@
+# Product search by need, in each language (8 cases)
+- id: search-en-esp32
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Do you have an ESP32 board with Wi-Fi?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: ["{live:price:esp32-devkit-v1}", "{live:price:esp32-s3-devkitc}"]
+- id: search-en-5v-distance
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: I need a distance sensor that works at 5V for my robot.
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [HC-SR04, VL53L0X]
+- id: search-en-i2c-display
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Which display can I connect over I2C?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [SSD1306, 16x2]
+- id: search-en-motor-driver
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: I want to drive two DC motors for a robot car. What driver do you sell?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [L298N, TB6612FNG]
+- id: search-bn-temperature
+  language: bn
+  login: none
+  channel: chat
+  turns:
+    - user: তাপমাত্রা মাপার জন্য কোন সেন্সর আছে?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [DHT22, DHT11, DS18B20, BME280]
+- id: search-bn-servo
+  language: bn
+  login: none
+  channel: chat
+  turns:
+    - user: রোবট আর্মের জন্য শক্তিশালী সার্ভো মোটর দরকার
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [MG996R]
+- id: search-mixed-raspberry
+  language: mixed
+  login: none
+  channel: chat
+  turns:
+    - user: Raspberry Pi 5 er 8GB ta koto taka?
+      expect:
+        answer_contains_any: ["13500", "13,500"]
+- id: search-mixed-gps
+  language: mixed
+  login: none
+  channel: chat
+  turns:
+    - user: amar project e location track korte hobe, GPS module ache?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: [NEO-6M]

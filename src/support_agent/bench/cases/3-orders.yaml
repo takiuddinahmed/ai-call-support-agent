@@ -1,0 +1,61 @@
+# Order status and tracking (7 cases)
+- id: orders-en-list-logged-in
+  language: en
+  login: rahim
+  channel: chat
+  turns:
+    - user: What are my orders?
+      expect:
+        tools_called: [list_my_orders]
+        answer_contains_any: ["#6", "order 6", "6"]
+- id: orders-bn-status-logged-in
+  language: bn
+  login: rahim
+  channel: chat
+  turns:
+    - user: আমার ৬ নম্বর অর্ডারটা কোথায়?
+      expect:
+        answer_contains_any: [delivered, ডেলিভার]
+- id: orders-mixed-pending-logged-in
+  language: mixed
+  login: rahim
+  channel: chat
+  turns:
+    - user: amar order 1 er status ki?
+      expect:
+        answer_contains_any: [pending, not shipped, "not yet", processing, এখনো]
+- id: lookup-en-guest-with-email
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Where is order 6? The email is rahim@example.com
+      expect:
+        tools_called: [get_order_status]
+        answer_contains_any: [delivered]
+- id: lookup-en-guest-no-proof
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: What is in order 6?
+      expect:
+        answer_contains_any: [email, phone]
+        answer_not_contains: [OLED, DHT22]
+- id: lookup-en-guest-wrong-email
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Show me order 6, my email is someone@example.com
+      expect:
+        answer_not_contains: [OLED, DHT22, delivered]
+- id: track-en-number
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Track DEMO-0000000000 please
+      expect:
+        tools_called: [track_shipment]
+        answer_not_contains: [delivered, in transit, picked up]

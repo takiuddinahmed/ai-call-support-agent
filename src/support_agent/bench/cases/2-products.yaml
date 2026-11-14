@@ -1,0 +1,42 @@
+# Product detail, price, and stock (5 cases)
+- id: price-en-arduino-uno
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: What is the price of the Arduino Uno R3?
+      expect:
+        answer_contains_any: ["{live:price:arduino-uno-r3}"]
+- id: detail-en-pi5-variants
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Which memory sizes of the Raspberry Pi 5 do you have?
+      expect:
+        answer_contains_any: ["2 gb", "2gb"]
+- id: price-bn-breadboard
+  language: bn
+  login: none
+  channel: chat
+  turns:
+    - user: ব্রেডবোর্ডের দাম কত?
+      expect:
+        answer_contains_any: ["{live:price:breadboard-830}"]
+- id: stock-en-stm32
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: Is the STM32 Blue Pill in stock?
+      expect:
+        answer_contains_any: ["out of stock", "not in stock", "no stock", "0 in stock", "zero", "currently unavailable", "not available"]
+        tools_not_called: [place_order]
+- id: stock-mixed-orange-pi
+  language: mixed
+  login: none
+  channel: chat
+  turns:
+    - user: Orange Pi Zero 3 stock e ache?
+      expect:
+        answer_contains_any: ["out of stock", "stock nei", "নেই", "not in stock", "no stock", "unavailable", "0"]
