@@ -50,8 +50,22 @@ async def test_place_order_as_guest(store):
     assert found.display_id == order.display_id
 
 
+async def register_test_customer(store) -> str:
+    """Makes a new store account, so that tests do not add orders to the demo customers."""
+    email = f"bench-customer-{uuid.uuid4().hex[:8]}@example.com"
+    response = await store._http.post(
+        "/auth/customer/emailpass/register", json={"email": email, "password": "Bench1234!"}
+    )
+    token = response.json()["token"]
+    await store._request(
+        "POST", "/store/customers", token,
+        json={"email": email, "first_name": "Bench", "last_name": "Test", "phone": "01700000000"},
+    )
+    return await store.login(email, "Bench1234!")
+
+
 async def test_place_order_as_customer_links_the_account(store):
-    token = await store.login("rahim@example.com", "Demo1234!")
+    token = await register_test_customer(store)
     wires = await variant_id(store, "jumper-wires-120")
     order = await store.place_order([(wires, 1)], address(), "rahim@example.com", token)
     assert order.display_id in [o.display_id for o in await store.list_orders(token)]
