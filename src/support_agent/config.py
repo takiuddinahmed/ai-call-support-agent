@@ -20,6 +20,11 @@ class Settings(BaseSettings):
     llm_base_url: str = "http://localhost:11434/v1"
     llm_model: str = "qwen3.5:4b"
     llm_api_key: str = "ollama"
+    # Hidden thinking of the model: none, low, medium, or high. Empty sends nothing.
+    # Measured with qwen3.5:4b: the model default thinks for about 18 s; "none" answers in
+    # about 0.2 s but skips the store tools and invents prices; "low" uses the tools and
+    # gives the first token in about 2 s.
+    llm_reasoning_effort: str = "low"
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
 

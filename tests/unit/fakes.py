@@ -68,3 +68,29 @@ class FakeStore:
         self.placed.append((items, address, email, token))
         return OrderView(10, "pending", "2026-11-15T10:00:00Z", 1180,
                          [OrderItem("ESP32 DevKit V1", "Default", 2)], "Inside Dhaka", None)
+
+
+class FakeLlm:
+    """Plays scripted rounds. Each round is a text answer or a list of (name, arguments)."""
+
+    def __init__(self, rounds, error: Exception | None = None):
+        self.rounds = list(rounds)
+        self.error = error
+        self.seen: list[list[dict]] = []
+
+    async def stream(self, model, messages, tools):
+        from support_agent.llm import LlmChunk, ToolCallDelta
+
+        self.seen.append(list(messages))
+        if self.error:
+            raise self.error
+        step = self.rounds.pop(0)
+        if isinstance(step, str):
+            for word in step.split(" "):
+                yield LlmChunk(text=word + " ")
+            yield LlmChunk(usage={"completion_tokens": len(step.split())})
+        else:
+            yield LlmChunk(tool_calls=[
+                ToolCallDelta(index=i, id=f"call_{i}", name=name, arguments=args)
+                for i, (name, args) in enumerate(step)
+            ])
