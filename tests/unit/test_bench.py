@@ -50,3 +50,11 @@ async def test_run_case_with_fake_model():
     result = await run_case(case, "m", FakeStore(), llm, max_tool_rounds=6, run_id="r1")
     assert result.passed, result.failures
     assert result.turns[0]["first_token_ms"] is not None
+
+
+def test_parse_footprint_reads_current_and_peak():
+    from support_agent.bench.runner import parse_footprint
+
+    text = "ollama [1]: 64-bit\n    phys_footprint: 12836802832 B\n    phys_footprint_peak: 14843433256 B\n"
+    assert parse_footprint(text) == (12836802832, 14843433256)
+    assert parse_footprint("nothing") == (0, 0)

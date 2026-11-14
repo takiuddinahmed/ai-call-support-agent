@@ -139,12 +139,37 @@ async def run_case(case: Case, model: str, store, llm, max_tool_rounds: int, run
     return result
 
 
-class MemoryPoller:
-    """Polls the Ollama /api/ps size of the loaded models every second and keeps the peak."""
+def parse_footprint(text: str) -> tuple[int, int]:
+    """Reads phys_footprint and phys_footprint_peak (bytes) from macOS `footprint -f bytes`."""
+    now = re.search(r"phys_footprint:\s+(\d+) B", text)
+    peak = re.search(r"phys_footprint_peak:\s+(\d+) B", text)
+    return (int(now.group(1)) if now else 0, int(peak.group(1)) if peak else 0)
 
-    def __init__(self, base_url: str):
+
+async def _runner_footprint(model: str) -> tuple[int, int]:
+    """Real memory of the Ollama runner process for the model, GPU memory included (macOS)."""
+    find = await asyncio.create_subprocess_exec(
+        "pgrep", "-f", f"ollama runner --model {model}", stdout=asyncio.subprocess.PIPE
+    )
+    pids = (await find.communicate())[0].decode().split()
+    if not pids:
+        return 0, 0
+    proc = await asyncio.create_subprocess_exec(
+        "footprint", "-f", "bytes", pids[0],
+        stdout=asyncio.subprocess.PIPE, stderr=asyncio.subprocess.DEVNULL,
+    )
+    return parse_footprint((await proc.communicate())[0].decode())
+
+
+class MemoryPoller:
+    """Every second, reads the Ollama /api/ps size (an estimate) and the real footprint of
+    the runner process, and keeps the peak of each."""
+
+    def __init__(self, base_url: str, model: str = ""):
         self.url = base_url.removesuffix("/v1") + "/api/ps"
+        self.model = model
         self.peak_bytes = 0
+        self.peak_footprint = 0
         self._task: asyncio.Task | None = None
 
     async def _loop(self):
@@ -156,6 +181,12 @@ class MemoryPoller:
                     self.peak_bytes = max(self.peak_bytes, size)
                 except (httpx.HTTPError, ValueError):
                     pass
+                if self.model:
+                    try:
+                        now, peak = await _runner_footprint(self.model)
+                        self.peak_footprint = max(self.peak_footprint, now, peak)
+                    except OSError:
+                        pass
                 await asyncio.sleep(1)
 
     def start(self):
@@ -225,7 +256,7 @@ async def main_async(args) -> int:
     cases = load_cases(args.cases)
     run_id = uuid.uuid4().hex[:8]
     live = await _live_prices(store, cases)
-    poller = MemoryPoller(settings.llm_base_url)
+    poller = MemoryPoller(settings.llm_base_url, args.model)
     poller.start()
     start = time.perf_counter()
     results = []
@@ -237,6 +268,7 @@ async def main_async(args) -> int:
     await store.aclose()
     summary = summarize(args.model, results, poller.peak_bytes, time.perf_counter() - start)
     summary["reasoning_effort"] = settings.llm_reasoning_effort
+    summary["peak_runner_footprint_gb"] = round(poller.peak_footprint / 1e9, 2)
     path = write_report(Path(args.out), summary, results)
     print(json.dumps(summary, indent=2))
     print(f"Report: {path}")
