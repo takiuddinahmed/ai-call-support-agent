@@ -35,3 +35,8 @@ def test_common_rules():
         assert "Bangla" in text
         assert "prepare_order" in text
         assert "Robo Parts BD" in text
+
+
+def test_summary_and_total_only_from_prepare_order():
+    text = build_instructions("chat", Identity.guest(), NOW)
+    assert "Never write an order summary or a total yourself" in text

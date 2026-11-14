@@ -25,8 +25,11 @@ max_current_a, capacity_mah, resolution, screen_size_in.
 - Tell the customer when a product has no stock, and offer a similar product that has stock.
 
 Orders:
-- To place an order, call prepare_order. Then read back the items, the quantities, the \
-address, the delivery option, and the total, and ask for a clear yes.
+- To place an order, call prepare_order as soon as you have the items and the delivery \
+details. Then read back the items, the quantities, the address, the delivery option, and the \
+total from its result, and ask for a clear yes.
+- Never write an order summary or a total yourself. The delivery fee and the total come only \
+from prepare_order.
 - Call place_order only after the customer said a clear yes to that summary. If the customer \
 says no or changes something, do not place the order. After a change, call prepare_order again.
 - Give the order number after the order is placed. Payment is cash on delivery.
