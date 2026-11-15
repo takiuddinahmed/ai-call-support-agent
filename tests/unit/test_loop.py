@@ -254,3 +254,16 @@ async def test_fallback_keeps_a_summary_from_an_earlier_turn():
 
 async def collect_with(session, llm, runner, text):
     return [e async for e in run_turn(session, text, llm, runner, "m", 6)]
+
+
+async def test_fallback_removes_the_summary_when_the_caller_closes_at_the_error():
+    store = FakeStore()
+    session = Session.new(Identity(kind="customer", token="tok", customer=RAHIM), "chat")
+    prepare = json.dumps({"items": [{"handle": "esp32-devkit-v1", "quantity": 2}]})
+    llm = FakeLlm([[("prepare_order", prepare)], ""])
+    async with aclosing(run_turn(session, "order two esp32", llm, ToolRunner(store, session),
+                                 "m", 6)) as turn:
+        async for e in turn:
+            if e.type == "error":
+                break  # For example, the chat client closed the connection.
+    assert session.summaries == {}

@@ -179,12 +179,13 @@ async def run_turn(
         text = "".join(text_parts).strip()
         if not text and (not calls or final_round):
             # For example, the hidden thinking filled the model context.
-            yield event("error", message=EMPTY_ANSWER_ERROR, round=round_no, fallback=True)
             # The customer gets only the fallback line, not an order summary from this turn.
-            # So a later "yes" must not place that summary.
+            # So a later "yes" must not place that summary. The delete comes before the
+            # first yield, because the caller can close the generator at any yield.
             for summary_id in [s.id for s in session.summaries.values()
                                if s.customer_turn_at_creation == session.customer_turns]:
                 del session.summaries[summary_id]
+            yield event("error", message=EMPTY_ANSWER_ERROR, round=round_no, fallback=True)
             text = EMPTY_ANSWER_FALLBACK
             yield event("text", text=text)
         if not calls or final_round:
