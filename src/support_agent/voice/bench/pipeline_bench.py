@@ -42,7 +42,7 @@ from pipecat.transports.base_input import BaseInputTransport
 from pipecat.transports.base_output import BaseOutputTransport
 from pipecat.transports.base_transport import BaseTransport, TransportParams
 
-from support_agent.loop import AgentEvent
+from support_agent.loop import EMPTY_ANSWER_FALLBACK, AgentEvent
 from support_agent.voice.bench.stt import percentile
 from support_agent.voice.debug_hub import DebugHub
 
@@ -783,7 +783,9 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
                                   live)
             failures += check_summary_city(expect, agent_events)
             last_answer = next((e for e in reversed(agent_events) if e.type == "answer"), None)
-            if last_answer is not None and not last_answer.data.get("text", "").strip():
+            answer_text = last_answer.data.get("text", "").strip() if last_answer else None
+            # The fallback line replaces an empty model answer. It still counts as empty.
+            if answer_text is not None and answer_text in ("", EMPTY_ANSWER_FALLBACK):
                 failures.append("the agent gave an empty answer")
         had_filler = any(kind == "filler" for kind, _ in turn_events)
         metrics = (turn_metrics(record, had_filler) if record is not None
@@ -879,6 +881,8 @@ async def run_calls(rate: int, calls_path: Path = CALLS_PATH,
         "rate": rate,
         "model": settings.llm_model,
         "reasoning_effort": settings.llm_reasoning_effort,
+        "reasoning_effort_after_tools": settings.llm_reasoning_effort_after_tools,
+        "max_prompt_tokens": settings.max_prompt_tokens,
         "stt_model": settings.voice_stt_model,
         "agent_voice": settings.voice_tts_voice,
         "caller_voice": voice,
@@ -986,6 +990,10 @@ def render_report(result: dict, day: str | None = None) -> str:
         "",
         f"Date: {day}. Model: {result['model']}"
         + (f" (reasoning {result['reasoning_effort']})" if result.get("reasoning_effort") else "")
+        + (f", reasoning after tools {result['reasoning_effort_after_tools']}"
+           if result.get("reasoning_effort_after_tools") else "")
+        + (f", prompt budget {result['max_prompt_tokens']} estimated tokens"
+           if result.get("max_prompt_tokens") else "")
         + f". Speech-to-text: {result['stt_model']}. Run ID: {result['run_id']}.",
         (f"Agent voice: {result.get('agent_voice', '-')}. "
          f"Caller voice: {result.get('caller_voice', '-')}. Run time: {result['seconds']} s."),
@@ -1137,11 +1145,12 @@ def render_report(result: dict, day: str | None = None) -> str:
         "prepare_order result. place_order sends that address to the store.",
         "",
     ]
-    empty = [f for c in calls for f in c["failures"] if "empty answer" in f]
+    empty = [f for c in calls for f in c["failures"] if f.endswith("the agent gave an empty answer")]
     lines += [
-        (f"Empty answers: {len(empty)}. After an empty answer the caller hears nothing. The "
-         f"Ollama context is {result.get('context_length', '-')} tokens. A long call can fill"
-         " it, and then the model answer stops early or is empty."),
+        (f"Empty answers: {len(empty)}. The count includes the turns where the agent said the "
+         f"fallback line \"{EMPTY_ANSWER_FALLBACK}\" in place of an empty model answer. The "
+         f"Ollama context is {result.get('context_length', '-')} tokens. The agent keeps the "
+         f"prompt under {result.get('max_prompt_tokens', '-')} estimated tokens."),
         "",
     ]
     facts = [f for c in calls for f in c["failures"]

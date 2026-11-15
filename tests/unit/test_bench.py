@@ -64,7 +64,7 @@ async def test_hung_turn_fails_with_timeout():
     import asyncio
 
     class HangingLlm:
-        async def stream(self, model, messages, tools):
+        async def stream(self, model, messages, tools, reasoning_effort=None):
             await asyncio.sleep(10)
             yield None
 

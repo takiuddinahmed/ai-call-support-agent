@@ -183,6 +183,8 @@ def build_task(transport: BaseTransport, session: Session, deps: VoiceDeps, hub:
         model=settings.llm_model,
         max_tool_rounds=settings.max_tool_rounds,
         on_event=on_event,
+        reasoning_effort_after_tools=settings.llm_reasoning_effort_after_tools,
+        max_prompt_tokens=settings.max_prompt_tokens,
     )
     turns = UserTurnProcessor(
         user_turn_strategies=UserTurnStrategies(

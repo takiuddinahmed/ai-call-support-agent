@@ -4,6 +4,7 @@ import uuid
 from dataclasses import dataclass, field
 from typing import Literal
 
+from support_agent.history import HistoryWindow
 from support_agent.store.models import Address, Customer, Quote
 
 Channel = Literal["chat", "voice"]
@@ -40,6 +41,8 @@ class Session:
     customer_turns: int = 0
     summaries: dict[str, OrderSummary] = field(default_factory=dict)
     verified_orders: set[int] = field(default_factory=set)
+    # The part of messages that the prompt shows (see history.py).
+    history: HistoryWindow = field(default_factory=HistoryWindow)
 
     @classmethod
     def new(cls, identity: Identity, channel: Channel = "chat") -> "Session":
@@ -59,3 +62,4 @@ class Session:
         self.customer_turns = 0
         self.summaries = {}
         self.verified_orders = set()
+        self.history = HistoryWindow()

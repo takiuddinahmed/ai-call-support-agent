@@ -12,6 +12,7 @@ from zoneinfo import ZoneInfo
 import httpx
 import openai
 
+from support_agent.history import estimate_tokens, fit_history, messages_tokens
 from support_agent.instructions import build_instructions
 from support_agent.llm import LlmClient
 from support_agent.session import Session
@@ -30,6 +31,15 @@ FINAL_ROUND_NOTE = (
 
 # The tool result for a tool call that did not run because the customer interrupted the turn.
 NOT_RUN_MESSAGE = "Not run: the customer interrupted."
+
+# The agent says this line if a model call gives no text and no tool call.
+EMPTY_ANSWER_FALLBACK = "Sorry, I did not get that. Can you say it again?"
+EMPTY_ANSWER_ERROR = "The model gave an empty answer. The agent said the fallback line."
+
+# The default prompt budget, in estimated tokens (see history.py). It is for the Ollama
+# context of 4096 tokens. The estimate is a little too high, so the real prompt is about
+# 2700 tokens, and about 1400 tokens stay for the hidden thinking and the answer.
+DEFAULT_MAX_PROMPT_TOKENS = 3200
 
 
 @dataclass
@@ -72,8 +82,19 @@ async def run_turn(
     runner: ToolRunner,
     model: str,
     max_tool_rounds: int,
+    reasoning_effort_after_tools: str = "",
+    max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS,
 ) -> AsyncIterator[AgentEvent]:
     """Streams one customer turn and yields timed events.
+
+    The first model call of the turn uses the configured reasoning effort. If
+    reasoning_effort_after_tools is not empty, each model call after a tool result uses it.
+
+    The prompt (system prompt, tool specs, and history) stays under max_prompt_tokens
+    (estimated tokens). history.fit_history() shrinks the older history.
+
+    If a model call gives no text and no tool call, the turn yields an "error" event and
+    answers with EMPTY_ANSWER_FALLBACK, so that the customer does not get silence.
 
     Cancel safety: a cancel (asyncio.CancelledError) can stop the turn at any await.
     After a cancel, session.messages stays valid for the next turn:
@@ -101,9 +122,15 @@ async def run_turn(
         system = build_instructions(
             session.channel, session.identity, datetime.now(ZoneInfo("Asia/Dhaka"))
         )
-        messages = [{"role": "system", "content": system}, *session.messages]
-        if final_round:
-            messages.append({"role": "system", "content": FINAL_ROUND_NOTE})
+        tools = [] if final_round else TOOL_SPECS
+        head = [{"role": "system", "content": system}]
+        tail = [{"role": "system", "content": FINAL_ROUND_NOTE}] if final_round else []
+        fixed = messages_tokens(head + tail) + (estimate_tokens(json.dumps(tools)) if tools else 0)
+        history = fit_history(session.messages, session.history, fixed, max_prompt_tokens,
+                              keep_texts=set(session.summaries))
+        messages = [*head, *history, *tail]
+        # The first call keeps the configuration value (None). Later calls follow tool results.
+        effort = (reasoning_effort_after_tools or None) if round_no > 1 else None
         yield event("llm_start", round=round_no, final=final_round)
         llm_start = time.perf_counter()
         first_token_ms = None
@@ -112,7 +139,7 @@ async def run_turn(
         usage: dict | None = None
         started: set[int] = set()
         try:
-            async for chunk in llm.stream(model, messages, [] if final_round else TOOL_SPECS):
+            async for chunk in llm.stream(model, messages, tools, reasoning_effort=effort):
                 if first_token_ms is None and (chunk.text or chunk.tool_calls):
                     first_token_ms = (time.perf_counter() - llm_start) * 1000
                     yield event("first_token", round=round_no, ms=round(first_token_ms, 1))
@@ -150,9 +177,11 @@ async def run_turn(
         )
 
         text = "".join(text_parts).strip()
-        if final_round and not text:
-            yield event("error", message="The agent could not finish the answer. Ask again.")
-            return
+        if not text and (not calls or final_round):
+            # For example, the hidden thinking filled the model context.
+            yield event("error", message=EMPTY_ANSWER_ERROR, round=round_no, fallback=True)
+            text = EMPTY_ANSWER_FALLBACK
+            yield event("text", text=text)
         if not calls or final_round:
             session.messages.append({"role": "assistant", "content": text})
             yield event("answer", text=text, total_ms=round((time.perf_counter() - start) * 1000, 1))

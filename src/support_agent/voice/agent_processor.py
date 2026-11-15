@@ -46,7 +46,7 @@ from pipecat.frames.frames import (
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
 
 from support_agent.llm import LlmClient
-from support_agent.loop import AgentEvent, run_turn
+from support_agent.loop import DEFAULT_MAX_PROMPT_TOKENS, AgentEvent, run_turn
 from support_agent.session import Session
 from support_agent.tools import ToolRunner
 
@@ -95,6 +95,8 @@ class AgentProcessor(FrameProcessor):
         model: str,
         max_tool_rounds: int,
         on_event: EventCallback,
+        reasoning_effort_after_tools: str = "",
+        max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS,
         answer_audio_timeout_s: float = ANSWER_AUDIO_TIMEOUT_S,
         **kwargs,
     ):
@@ -104,6 +106,8 @@ class AgentProcessor(FrameProcessor):
         self._runner = runner
         self._model = model
         self._max_tool_rounds = max_tool_rounds
+        self._reasoning_effort_after_tools = reasoning_effort_after_tools
+        self._max_prompt_tokens = max_prompt_tokens
         self._on_event = on_event
         self._answer_audio_timeout_s = answer_audio_timeout_s
 
@@ -276,6 +280,8 @@ class AgentProcessor(FrameProcessor):
             async with aclosing(run_turn(
                 self._session, text, self._llm, self._runner, self._model,
                 self._max_tool_rounds,
+                reasoning_effort_after_tools=self._reasoning_effort_after_tools,
+                max_prompt_tokens=self._max_prompt_tokens,
             )) as events:
                 async for event in events:
                     await self._handle_event(event)

@@ -118,7 +118,9 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
         async def stream():
             runner = ToolRunner(store, session)
             async for event in run_turn(
-                session, body.message, llm, runner, model, settings.max_tool_rounds
+                session, body.message, llm, runner, model, settings.max_tool_rounds,
+                reasoning_effort_after_tools=settings.llm_reasoning_effort_after_tools,
+                max_prompt_tokens=settings.max_prompt_tokens,
             ):
                 yield f"data: {event.to_json()}\n\n"
 

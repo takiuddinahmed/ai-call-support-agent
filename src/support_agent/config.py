@@ -27,6 +27,13 @@ class Settings(BaseSettings):
     # about 0.2 s but skips the store tools and invents prices; "low" uses the tools and
     # gives the first token in about 2 s.
     llm_reasoning_effort: str = "low"
+    # The thinking level of each model call after a tool result in the same turn. Empty
+    # uses llm_reasoning_effort. See reports/2026-11-15-task-11-context-and-effort.md.
+    llm_reasoning_effort_after_tools: str = ""
+    # The prompt budget in estimated tokens (about 3 characters for each token, see
+    # history.py). It must stay under the model context: Ollama uses 4096 tokens by default.
+    # The default keeps about 1400 tokens free for the thinking and the answer.
+    max_prompt_tokens: int = 3200
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
     # Voice channel. The speech benchmark can change the models.

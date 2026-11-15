@@ -152,7 +152,9 @@ ollama stop <model>
 | `LLM_BASE_URL` | `http://localhost:11434/v1` | The OpenAI-compatible model server |
 | `LLM_MODEL` | `qwen3.5:4b-q4_K_M` | The default model |
 | `LLM_REASONING_EFFORT` | `low` | Hidden thinking: `none`, `low`, `medium`, `high`, or empty for the model default |
+| `LLM_REASONING_EFFORT_AFTER_TOOLS` | empty | Hidden thinking of the model calls after a tool result in the same turn. Empty uses `LLM_REASONING_EFFORT`. |
 | `MAX_TOOL_ROUNDS` | `6` | Tool rounds per turn. After the last round, the agent answers without tools. |
+| `MAX_PROMPT_TOKENS` | `3200` | The prompt budget in estimated tokens. It must stay under the model context. See "Model context". |
 | `CATALOG_CACHE_SECONDS` | `300` | How long the agent keeps the product list |
 | `AGENT_PHONE_TOKEN` | empty | Shared secret of the Asterisk phone route. Use the same value in `../demo-store/.env`. Empty refuses every phone call. |
 | `MAX_CALL_SECONDS` | `900` | The agent hangs up a phone call after this time |
@@ -187,6 +189,28 @@ Two findings matter for speed:
 
 - With the model default, `qwen3.5:4b` thinks for about 18 seconds before the first word. `LLM_REASONING_EFFORT=low` brings this to about 2 seconds.
 - With `none`, the first word comes in about 0.2 seconds, but the model skips the store tools and invents prices. The next work is to get this speed without that error.
+
+## Model context
+
+Ollama runs `qwen3.5:4b-q4_K_M` with a context of 4096 tokens. The system prompt and the tool specs use about 1850 tokens. If the prompt fills the context, no room stays for the hidden thinking, and the model gives an empty answer.
+
+The agent keeps each prompt under `MAX_PROMPT_TOKENS` (estimated tokens). The estimate is ASCII characters / 3 plus other characters / 1.5. It is a little too high, so the real prompt is smaller. If the prompt is too large, the agent first replaces old tool results with a short note. Then it drops the oldest whole customer turns. A tool call and its result stay together. The current turn and the pending order summary always stay. `session.messages` keeps the full history.
+
+If a model call still gives no text and no tool call, the agent says "Sorry, I did not get that. Can you say it again?". The debug panel shows an error row.
+
+To give the model more history, you can use a larger context:
+
+1. Make a model variant with a larger context. Ollama ignores `num_ctx` in a request to the OpenAI-compatible API.
+
+   ```sh
+   printf 'FROM qwen3.5:4b-q4_K_M\nPARAMETER num_ctx 8192\n' > /tmp/Modelfile.ctx8k
+   ollama create qwen3.5:4b-q4_K_M-ctx8k -f /tmp/Modelfile.ctx8k
+   ```
+
+   As an alternative, set `OLLAMA_CONTEXT_LENGTH=8192` for the Ollama server and start it again. This changes all models.
+2. Set `LLM_MODEL=qwen3.5:4b-q4_K_M-ctx8k` and `MAX_PROMPT_TOKENS=6400` in `.env`.
+
+The 8192 context measured 3.4 GB in `ollama ps`, and 4096 measured 3.2 GB. The details are in `reports/2026-11-15-task-11-context-and-effort.md`.
 
 ## Project layout
 

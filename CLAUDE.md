@@ -42,7 +42,8 @@ The package `src/support_agent` is a core library plus the chat server and the v
 - `tools.py` defines the tools that the model can call (`TOOL_SPECS`) and `ToolRunner`. `ToolRunner.run` never raises: every failure becomes `ToolResult(ok=False, content=<message for the model>)`. Keep it that way, because a raised error breaks the streamed turn.
 - `session.py` holds the conversation, the identity (logged-in customer or guest), and the pending order summaries. On each login and logout, `start_over()` clears everything.
 - `instructions.py` builds the system prompt for the channel `chat` or `voice`. Voice style means one to three sentences, no lists, numbers in words.
-- `loop.py` `run_turn()` streams one customer turn and yields timed `AgentEvent`s. The event types are `turn_start`, `llm_start`, `first_token`, `text`, `tool_call_start`, `llm_end`, `tool_start`, `tool_end`, `answer`, and `error`. When the model starts to name a tool, `tool_call_start` comes before the arguments end. The voice filler uses it. If the caller does not close the generator, `run_turn` is not cancel-safe. Always use `contextlib.aclosing(run_turn(...))`. After `max_tool_rounds`, it makes one last model call with no tools, so that the model must answer.
+- `loop.py` `run_turn()` streams one customer turn and yields timed `AgentEvent`s. The event types are `turn_start`, `llm_start`, `first_token`, `text`, `tool_call_start`, `llm_end`, `tool_start`, `tool_end`, `answer`, and `error`. When the model starts to name a tool, `tool_call_start` comes before the arguments end. The voice filler uses it. If the caller does not close the generator, `run_turn` is not cancel-safe. Always use `contextlib.aclosing(run_turn(...))`. After `max_tool_rounds`, it makes one last model call with no tools, so that the model must answer. Each model call sends a bounded history from `history.py` `fit_history()` (budget `max_prompt_tokens`). If a model call gives no text and no tool call, the turn yields an `error` event with `fallback: true` and answers with `EMPTY_ANSWER_FALLBACK`. If `llm_reasoning_effort_after_tools` is not empty, the model calls after a tool result use it.
+- `history.py` keeps the prompt under the budget. It shrinks old tool results first, then drops the oldest whole turns. It keeps tool call pairs whole, the current turn, and the tool result of the pending order summary. It does not change `session.messages`, because the voice processor keeps indexes into that list. `Session.history` stores the window, and the window moves only forward, so the prompt start stays the same for the model server prompt cache.
 - `llm.py` is the OpenAI-compatible streaming client. It sends `reasoning_effort` from the configuration.
 - `server/app.py` serves the chat page and streams the events as server-sent events to the debug panel. `create_app(settings, store=, llm=, models=)` takes injected parts for tests. Sessions live in memory.
 - `voice/` is the voice package. It imports Pipecat only inside functions, so the chat server loads no Pipecat module.
@@ -80,11 +81,15 @@ These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agen
 
 ## Voice measurements
 
-The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s). In one browser call, the first model token took about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-small-mlx`. Known problems follow. The 4096-token context fills in a long call. The turn-end model splits a turn at a pause inside a sentence. Whisper can mishear city names.
+The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s). In one browser call, the first model token took about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-small-mlx`. Known problems follow. The turn-end model splits a turn at a pause inside a sentence. Whisper can mishear city names.
 
 ## Tests
 
 `tests/unit/fakes.py` has `FakeStore` (same method names as `StoreClient`) and `FakeLlm` (plays scripted rounds: a string is a text answer, a list of `(tool_name, json_arguments)` is a tool round). Use them for loop, tool, server, and benchmark tests. A change to a `StoreClient` method signature needs the same change in `FakeStore`.
+
+## Model context
+
+Ollama runs the model with a 4096-token context. The system prompt and the tool specs use about 1850 tokens. Before Task 11, a long call filled the context. Then the hidden thinking used the last free tokens, and the model gave an empty answer. `max_prompt_tokens` (default 3200 estimated tokens, about 2700 real tokens) prevents this. If you use a larger context, raise `max_prompt_tokens` too. See README "Model context".
 
 ## Model findings
 

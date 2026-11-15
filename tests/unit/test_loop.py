@@ -1,11 +1,13 @@
 import asyncio
+import itertools
 import json
 from contextlib import aclosing
 
 import httpx
 import pytest
 
-from support_agent.loop import run_turn
+from support_agent.history import estimate_tokens, messages_tokens
+from support_agent.loop import EMPTY_ANSWER_FALLBACK, run_turn
 from support_agent.session import Identity, Session
 from support_agent.tools import ToolRunner
 from tests.unit.fakes import RAHIM, FakeLlm, FakeStore
@@ -26,7 +28,7 @@ async def test_plain_answer_event_order():
     assert types(events) == ["turn_start", "llm_start", "first_token", "llm_end", "answer"]
     assert events[-1].data["text"].strip() == "Hello there"
     assert session.messages[-1] == {"role": "assistant", "content": "Hello there"}
-    assert all(b.t_ms >= a.t_ms for a, b in zip(events, events[1:]))
+    assert all(b.t_ms >= a.t_ms for a, b in itertools.pairwise(events))
 
 
 async def test_tool_round_then_answer():
@@ -176,3 +178,56 @@ async def test_second_cancel_during_tool_still_records_the_order():
     last = session.messages[-1]
     assert last["role"] == "tool" and json.loads(last["content"])["order"]["display_id"] == 10
     assert_history_valid(session.messages)
+
+
+async def test_effort_after_tools_applies_after_tool_round():
+    session = Session.new(Identity.guest())
+    llm = FakeLlm([[("get_product", '{"handle": "esp32-devkit-v1"}')], "It costs 550 taka"])
+    runner = ToolRunner(FakeStore(), session)
+    _ = [e async for e in run_turn(session, "price?", llm, runner, "m", 6,
+                                   reasoning_effort_after_tools="none")]
+    # None means the configuration value (llm_reasoning_effort).
+    assert llm.efforts_seen == [None, "none"]
+
+
+async def test_empty_effort_after_tools_keeps_the_configuration_value():
+    session = Session.new(Identity.guest())
+    llm = FakeLlm([[("get_product", '{"handle": "esp32-devkit-v1"}')], "It costs 550 taka"])
+    await collect(session, llm)
+    assert llm.efforts_seen == [None, None]
+
+
+async def test_empty_model_answer_gives_the_fallback_line_and_an_error_event():
+    session = Session.new(Identity.guest())
+    events = await collect(session, FakeLlm([""]))
+    kinds = types(events)
+    assert "error" in kinds and kinds[-1] == "answer"
+    assert next(e for e in events if e.type == "error").data["fallback"] is True
+    assert events[-1].data["text"] == EMPTY_ANSWER_FALLBACK
+    # The voice channel speaks the text events, so the fallback line comes as text too.
+    assert EMPTY_ANSWER_FALLBACK in "".join(e.data["text"] for e in events if e.type == "text")
+    assert session.messages[-1] == {"role": "assistant", "content": EMPTY_ANSWER_FALLBACK}
+
+
+async def test_empty_final_round_gives_the_fallback_line():
+    session = Session.new(Identity.guest())
+    llm = FakeLlm([[("get_product", '{"handle": "x"}')], ""])
+    events = await collect(session, llm, max_rounds=1)
+    assert events[-1].type == "answer"
+    assert events[-1].data["text"] == EMPTY_ANSWER_FALLBACK
+    assert_history_valid(session.messages)
+
+
+async def test_long_conversation_prompt_stays_under_the_budget():
+    session = Session.new(Identity.guest(), "voice")
+    budget = 4000
+    for n in range(30):
+        llm = FakeLlm([[("get_product", '{"handle": "raspberry-pi-5"}')], f"Answer {n} " * 30])
+        runner = ToolRunner(FakeStore(), session)
+        _ = [e async for e in run_turn(session, f"Question {n}", llm, runner, "m", 6,
+                                       max_prompt_tokens=budget)]
+        for sent, tools in zip(llm.seen, llm.tools_seen):
+            assert sent[0]["role"] == "system"
+            assert estimate_tokens(json.dumps(tools)) + messages_tokens(sent) <= budget
+            assert_history_valid(sent[1:])
+    assert len(session.messages) == 30 * 4
