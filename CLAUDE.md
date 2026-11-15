@@ -35,14 +35,14 @@ The `store` tests and the benchmark order cases place real orders in the demo st
 
 ## Architecture
 
-The package `src/support_agent` is a core library plus two front ends. The core has no web code, so the later voice app can import it.
+The package `src/support_agent` is a core library plus the chat server and the voice package. The core has no web code, so both front ends import it.
 
 - `store/client.py` is the only code that calls the store API. It caches the product list (`catalog_cache_seconds`). `quote()` makes a temporary store cart to read the delivery fee. `place_order()` runs the full Medusa cart flow. Delivery zone rule: city "Dhaka" (trimmed, any case) is "Inside Dhaka", other cities are "Outside Dhaka". The store enforces the same rule.
 - `specs.py` searches products by text, category, and typed spec values from `metadata.specs`. `SPEC_KEYS` copies the key list from the demo-store README. Text search matches whole words, drops stop words, prefers products that contain all words, and falls back to any word.
 - `tools.py` defines the tools that the model can call (`TOOL_SPECS`) and `ToolRunner`. `ToolRunner.run` never raises: every failure becomes `ToolResult(ok=False, content=<message for the model>)`. Keep it that way, because a raised error breaks the streamed turn.
 - `session.py` holds the conversation, the identity (logged-in customer or guest), and the pending order summaries. On each login and logout, `start_over()` clears everything.
 - `instructions.py` builds the system prompt for the channel `chat` or `voice`. Voice style means one to three sentences, no lists, numbers in words.
-- `loop.py` `run_turn()` streams one customer turn and yields timed `AgentEvent`s. The event types are `turn_start`, `llm_start`, `first_token`, `text`, `tool_call_start`, `llm_end`, `tool_start`, `tool_end`, `answer`, and `error`. `tool_call_start` comes when the model starts to name a tool, before the arguments end. The voice filler uses it. `run_turn` is cancel-safe only if the caller closes it: always use `contextlib.aclosing(run_turn(...))`. After `max_tool_rounds`, it makes one last model call with no tools, so that the model must answer.
+- `loop.py` `run_turn()` streams one customer turn and yields timed `AgentEvent`s. The event types are `turn_start`, `llm_start`, `first_token`, `text`, `tool_call_start`, `llm_end`, `tool_start`, `tool_end`, `answer`, and `error`. When the model starts to name a tool, `tool_call_start` comes before the arguments end. The voice filler uses it. If the caller does not close the generator, `run_turn` is not cancel-safe. Always use `contextlib.aclosing(run_turn(...))`. After `max_tool_rounds`, it makes one last model call with no tools, so that the model must answer.
 - `llm.py` is the OpenAI-compatible streaming client. It sends `reasoning_effort` from the configuration.
 - `server/app.py` serves the chat page and streams the events as server-sent events to the debug panel. `create_app(settings, store=, llm=, models=)` takes injected parts for tests. Sessions live in memory.
 - `voice/` is the voice package. It imports Pipecat only inside functions, so the chat server loads no Pipecat module.
@@ -65,7 +65,7 @@ These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agen
 
 ## Voice rules
 
-- Before `place_order`, the voice agent reads back what it heard (name, address, city, phone) and the caller must confirm. This guards against speech-to-text errors.
+- Before `place_order`, the voice agent reads back what it heard (name, address, city, phone) and the caller must say yes. This guards against speech-to-text errors.
 - The voice agent answers in English only.
 - A voice guest gives a phone number, not an email. If the email is empty, `prepare_order` makes one with `voice_guest_email(phone)`, in the form `voice-880XXXXXXXXXX@guest.robopartsbd.local`.
 - The phone route makes a guest session that no HTTP route can reach. A phone caller cannot log in.
@@ -80,7 +80,7 @@ These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agen
 
 ## Voice measurements
 
-The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s), and the first model token takes about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-small-mlx`. Known problems: the 4096-token context fills in a long call, the turn-end model splits a turn at a pause inside a sentence, and Whisper can mishear city names.
+The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s). In one browser call, the first model token took about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-small-mlx`. Known problems follow. The 4096-token context fills in a long call. The turn-end model splits a turn at a pause inside a sentence. Whisper can mishear city names.
 
 ## Tests
 

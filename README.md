@@ -86,14 +86,14 @@ Asterisk is in the demo store, on the branch `feat/asterisk` of `../demo-store`.
    ```
 
 4. Start the agent server on this branch.
-5. Register a softphone with the settings below.
+5. Register a softphone with the configuration below.
 6. Dial 2000 for the agent. Dial 600 for an echo test of the phone link.
 
 If the Mac LAN address changes, change `ASTERISK_LAN_IP` and run `docker compose up -d asterisk` again.
 
-Softphone settings. These are the same in Linphone (iPhone, on the same Wi-Fi as the Mac) and in Telephone (the Mac app from the Mac App Store):
+Softphone configuration. These are the same in Linphone (iPhone, on the same Wi-Fi as the Mac) and in Telephone (the Mac app from the Mac App Store):
 
-| Setting | Value |
+| Item | Value |
 | --- | --- |
 | Domain | The Mac LAN address with port 5060, for example `192.168.10.239:5060` |
 | User | `1001` |

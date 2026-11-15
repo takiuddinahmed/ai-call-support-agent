@@ -40,9 +40,9 @@ class Settings(BaseSettings):
                                                                 "phone_token"))
     # The phone route ends a call after this time, in seconds.
     max_call_seconds: int = 900
-    # Host names that the server accepts in the Host header. Other names get 400.
-    # Asterisk in Docker connects to the phone route with host.docker.internal. The debug
-    # routes still accept only clients on this computer.
+    # Host names that the server accepts in the Host header. Unknown names get 400.
+    # Asterisk in Docker connects to the phone route with host.docker.internal. That name gets
+    # 403 on every route except the phone route. The debug routes accept only local clients.
     allowed_hosts: list[str] = ["localhost", "127.0.0.1", "host.docker.internal"]
 
 

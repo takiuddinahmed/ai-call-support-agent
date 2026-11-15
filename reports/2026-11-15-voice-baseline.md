@@ -82,7 +82,7 @@ The upper figure is the agent footprint, plus the runner footprint, plus the Oll
 The call benchmark found these problems:
 
 1. Context overflow. The Ollama context is 4096 tokens. A long call fills it. Then the model gives an empty answer and the caller hears nothing. The 20-turn call gave empty answers in the late turns. The 16 kHz run had 8 empty answers.
-2. Split turns. The turn-end model ends a turn at a pause inside a sentence. This happens, for example, when a caller says a phone number in groups. The agent answers the first part and speaks over the caller. This run had 2 split turns and 2 turns where the agent spoke over the caller.
+2. Split turns. When a caller says a phone number in groups, the turn-end model can end the turn at a pause inside a sentence. The agent answers the first part and speaks over the caller. This run had 2 split turns and 2 turns where the agent spoke over the caller.
 3. Wrong city. Whisper heard "Sillet" for "Sylhet". The order summary then had the wrong city.
 4. The guest order call often fails. The call `voice-guest-order-yes` failed in the runs. The agent repeated tool calls at the last turn.
 5. The memory upper figure of 13.3 GB can count the same weights two times. Do not read it as the real memory.
