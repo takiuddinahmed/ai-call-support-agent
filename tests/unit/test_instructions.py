@@ -45,3 +45,17 @@ def test_summary_and_total_only_from_prepare_order():
 def test_filters_only_for_stated_needs():
     text = build_instructions("chat", Identity.guest(), NOW)
     assert "Use a spec filter only for a need that the customer stated" in text
+
+
+def test_voice_instructions_force_english():
+    text = build_instructions("voice", Identity.guest(), NOW)
+    assert "Answer in English" in text
+    assert "language of the customer's last message" not in text
+    assert "digit by digit" in text
+    assert "phone number" in text  # guests give the phone number for order status
+
+
+def test_chat_instructions_keep_language_rule():
+    assert "language of the customer's last message" in build_instructions(
+        "chat", Identity.guest(), NOW
+    )

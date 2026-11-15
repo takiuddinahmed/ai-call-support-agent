@@ -214,3 +214,42 @@ async def test_failed_place_order_cannot_be_retried_into_a_duplicate():
     ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
     assert not ok and "Unknown summary" in message
     assert len(store.placed) == 1
+
+
+def voice_guest():
+    return Session.new(Identity.guest(), "voice")
+
+
+async def test_voice_place_order_needs_heard_summary():
+    store = FakeStore()
+    session = voice_guest()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert ok
+    turn = session.customer_turns
+    session.customer_turns += 1
+    ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok and "Read the full summary to the customer again" in message
+    assert store.placed == []
+    session.mark_summaries_heard(turn)
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_chat_place_order_needs_no_heard_flag():
+    store = FakeStore()
+    session = customer()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM])
+    session.customer_turns += 1
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_voice_guest_order_without_email_uses_phone_email():
+    address = {**GUEST_ADDRESS, "phone": "01712345678"}
+    ok, summary = await run(voice_guest(), FakeStore(), "prepare_order", items=[ITEM], address=address)
+    assert ok and summary["email"] == "voice-8801712345678@guest.robopartsbd.local"
+
+
+async def test_chat_guest_order_without_email_still_asks_for_email():
+    ok, message = await run(guest(), FakeStore(), "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert not ok and "email" in message

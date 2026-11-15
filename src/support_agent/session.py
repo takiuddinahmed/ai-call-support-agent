@@ -28,6 +28,7 @@ class OrderSummary:
     email: str
     quote: Quote
     customer_turn_at_creation: int
+    heard: bool = False
 
 
 @dataclass
@@ -43,6 +44,12 @@ class Session:
     @classmethod
     def new(cls, identity: Identity, channel: Channel = "chat") -> "Session":
         return cls(id=uuid.uuid4().hex, identity=identity, channel=channel)
+
+    def mark_summaries_heard(self, created_at_turn: int) -> None:
+        """Marks the summaries from that customer turn as read aloud to the customer."""
+        for summary in self.summaries.values():
+            if summary.customer_turn_at_creation == created_at_turn:
+                summary.heard = True
 
     def start_over(self, identity: Identity) -> None:
         """Changes the customer and forgets the conversation, the summaries, and the

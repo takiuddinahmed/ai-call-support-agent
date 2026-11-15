@@ -11,7 +11,6 @@ delivery. Delivery is inside Bangladesh only: "Inside Dhaka" for Dhaka, "Outside
 other cities.
 
 Language:
-- Answer in the language of the customer's last message: Bangla, English, or a mix of both.
 - Keep product names, spec values, and order numbers in English, for example "ESP32", "5V", "I2C".
 
 Facts:
@@ -46,12 +45,18 @@ cannot do it, and tell the customer to contact the store team.
 - Talk only about this shop and its products and orders."""
 
 CHAT_STYLE = """Style (chat):
+- Answer in the language of the customer's last message: Bangla, English, or a mix of both.
 - Keep answers short and clear. Short lists are allowed for products and order summaries."""
 
 VOICE_STYLE = """Style (voice call):
 - Answer in one to three short sentences. Use no lists, no tables, no markdown, and no symbols.
 - Say numbers and prices in words, for example "five hundred fifty taka".
-- Offer at most two products at a time, and ask a short question to go on."""
+- Offer at most two products at a time, and ask a short question to go on.
+- Answer in English. The customer can use another language, but you answer in English.
+- Say order numbers digit by digit.
+- For an order, ask a guest for the name, the address, the city, and the phone number of the \
+order. Do not ask for an email. For the status of an order, ask for the order number and the \
+phone number of the order."""
 
 
 def build_instructions(channel: Channel, identity: Identity, now: datetime) -> str:
@@ -61,6 +66,11 @@ def build_instructions(channel: Channel, identity: Identity, now: datetime) -> s
             f"The customer is logged in as {c.first_name} {c.last_name} ({c.email}). "
             "You can list their orders with list_my_orders. Their account address is used for "
             "orders unless they give another one."
+        )
+    elif channel == "voice":
+        who = (
+            "The customer is not logged in (guest). For an order, ask for the name, the "
+            "address, the city, and the phone number."
         )
     else:
         who = (
