@@ -120,6 +120,20 @@ uv run python -m support_agent.voice.bench calls --rate 16000          # full ca
 
 The first numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s on turns without tools. The slowest step is the first token of the model.
 
+## Voice results
+
+The full report is in `reports/2026-11-15-voice-comparison.md`. The numbers come from one run for each column at 16 kHz.
+
+| Measure | Baseline | Final (turbo plus context fix) |
+| --- | --- | --- |
+| Pause median, turns without tools | 3.37 s | 2.99 s |
+| Filler start median | 2.32 s | 1.98 s |
+| Empty answers | 8 | 0 |
+| Calls passed | 2 of 5 | 3 of 5 |
+| Memory upper figure | 13.3 GB | 9.1 GB |
+
+The memory goal passes. The pause goal of 1.5 s, the filler goal of 1.5 s, and the correctness goal do not pass. The first model token is about 70 percent of the pause. Single runs vary a lot.
+
 ## The benchmark
 
 The benchmark runs 26 scripted conversations in English, Bangla, and mixed language. It checks the tool calls and the facts in each answer, and it measures the speed.
