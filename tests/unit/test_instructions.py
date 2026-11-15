@@ -59,3 +59,16 @@ def test_chat_instructions_keep_language_rule():
     assert "language of the customer's last message" in build_instructions(
         "chat", Identity.guest(), NOW
     )
+
+
+def test_voice_style_sounds_like_a_person():
+    text = build_instructions("voice", Identity.guest(), NOW)
+    assert "Do not greet again" in text
+    assert "Do not end every answer with a question" in text
+    assert "short summary first" in text
+    assert "postal code" in text  # the rule that forbids it
+
+
+def test_logged_in_caller_orders_with_the_account_address():
+    text = build_instructions("voice", CUSTOMER, NOW)
+    assert "call prepare_order with only the items" in text

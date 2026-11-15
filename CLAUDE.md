@@ -92,6 +92,8 @@ The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause me
 
 Ollama runs the model with a 4096-token context. The system prompt and the tool specs use about 1850 tokens. Before Task 11, a long call filled the context. Then the hidden thinking used the last free tokens, and the model gave an empty answer. `max_prompt_tokens` (default 3200 estimated tokens, about 2700 real tokens) prevents this. If you use a larger context, raise `max_prompt_tokens` too. See README "Model context".
 
+The voice style prompt has example answers, because the 4B model copies examples better than it follows rules. With the 3200 budget, the voice prompt and the tool specs leave about 600 tokens of history. Then the model loses the earlier turns and asks again for the product. Use the `qwen3.5:4b-q4_K_M-ctx8k` model with `MAX_PROMPT_TOKENS=6400` for calls.
+
 ## Model findings
 
 The measurements are in `reports/2026-11-15-model-comparison.md`. Two of them shape the defaults:

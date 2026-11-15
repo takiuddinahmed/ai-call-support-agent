@@ -5,13 +5,19 @@ start, and the chat server must start as fast as before.
 """
 
 import asyncio
+from contextlib import aclosing
 from dataclasses import dataclass, field
+from datetime import datetime
 from pathlib import Path
+from zoneinfo import ZoneInfo
 
 from loguru import logger
 
 from support_agent.config import Settings
+from support_agent.instructions import build_instructions
 from support_agent.llm import LlmClient
+from support_agent.session import Session
+from support_agent.tools import TOOL_SPECS
 
 KOKORO_MODEL_NAME = "kokoro-v1.0.onnx"
 KOKORO_VOICES_NAME = "voices-v1.0.bin"
@@ -61,3 +67,22 @@ class VoiceDeps:
 
     def __post_init__(self):
         self.models = VoiceModels(self.settings)
+
+    async def warm_up_llm(self, session: Session) -> None:
+        """Loads the language model before the first caller turn.
+
+        Ollama unloads an idle model after some minutes, and a cold load delays the first
+        answer. The request uses the system prompt and the tool specs of run_turn, so the
+        model server can also keep that prompt start in its cache. The request stops at the
+        first chunk and does not change the session. A failure goes to the log only.
+        """
+        system = build_instructions(session.channel, session.identity,
+                                    datetime.now(ZoneInfo("Asia/Dhaka")))
+        messages = [{"role": "system", "content": system}, {"role": "user", "content": "Hello."}]
+        try:
+            async with aclosing(self.llm.stream(self.settings.llm_model, messages,
+                                                TOOL_SPECS)) as chunks:
+                async for _ in chunks:
+                    break
+        except Exception as error:  # noqa: BLE001  the call must start also without a warm-up
+            logger.warning(f"The model warm-up failed: {error}")

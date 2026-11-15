@@ -81,3 +81,14 @@ async def test_tracker_reports_the_spoken_answer_text():
         filler, TTSTextFrame("It costs five hundred taka.", text_type="sentence"),
     ])
     assert events.events == [("spoken", {"text": "It costs five hundred taka."})]
+
+
+def test_greeting_uses_the_first_name_of_a_logged_in_caller():
+    from support_agent.session import Identity, Session
+    from support_agent.voice.pipeline import greeting_for
+    from tests.unit.fakes import RAHIM
+
+    customer = Session.new(Identity(kind="customer", token="t", customer=RAHIM), "voice")
+    assert greeting_for(customer).startswith("Hi Rahim, thanks for calling Robo Parts BD.")
+    guest = Session.new(Identity.guest(), "voice")
+    assert greeting_for(guest).startswith("Hi, thanks for calling Robo Parts BD.")

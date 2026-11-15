@@ -317,7 +317,7 @@ class FakePipeline:
     def __init__(self):
         self.turn = None
 
-    def build_task(self, transport, session, deps, hub, call_id, audio_rate):
+    def build_task(self, transport, session, deps, hub, call_id, audio_rate, greeting=None):
         from pipecat.pipeline.pipeline import Pipeline
         from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 

@@ -145,24 +145,55 @@ async def test_empty_transcription_is_ignored():
     assert down == []
 
 
-async def test_speech_before_audio_is_held():
-    llm = FakeLlm(["It costs 550 taka.", "Yes, I am here."], delay_s=0.05)
+async def test_words_before_the_answer_audio_replace_the_turn():
+    # The caller says "hello" two times while the model is slow. The agent answers once.
+    llm = FakeLlm(["Hello! How can I help you?", "Hello! How can I help you?"], delay_s=0.05)
     setup = Setup(llm)
     down = await setup.run([
-        said("price of esp32"), SleepFrame(0.1),
-        InterruptionFrame(), SleepFrame(0.05), said("hello?"), SleepFrame(0.3),
-        *audio_pair(), SleepFrame(0.3),
+        said("Hello."), SleepFrame(0.02),
+        InterruptionFrame(), SleepFrame(0.02), said("Hello."), SleepFrame(0.6),
     ])
-    assert setup.session.customer_turns == 2
-    assert not any(isinstance(f, InterruptionFrame) for f in down)
-    # The held turn starts after the answer audio of turn 1 ended.
-    stopped = index_of(down, BotStoppedSpeakingFrame)
-    second_start = index_of(down, LLMFullResponseStartFrame, start=1)
-    assert second_start > stopped
-    roles = [(m["role"], m["content"]) for m in setup.session.messages]
-    assert roles == [("user", "price of esp32"), ("assistant", "It costs 550 taka."),
-                     ("user", "hello?"), ("assistant", "Yes, I am here.")]
-    assert setup.kinds().count("answer") == 2
+    assert setup.kinds().count("answer") == 1
+    # The processor stops the first turn, and the text-to-speech step drops its text.
+    assert sum(isinstance(f, InterruptionFrame) for f in down) == 1
+    assert setup.session.messages == [
+        {"role": "user", "content": "Hello."},
+        {"role": "user", "content": "Hello."},
+        {"role": "assistant", "content": "Hello! How can I help you?"},
+    ]
+    assert ("interrupted", "words") in [(k, d.get("by")) for k, d in setup.events]
+
+
+async def test_words_during_the_filler_replace_the_turn():
+    llm = FakeLlm([[("search_products", '{"text":"esp32"}')], "It costs 550 taka.",
+                   "Sure, tell me the order number."], delay_s=0.05)
+    setup = Setup(llm)
+    down = await setup.run_with_tracker([
+        said("price of esp32"), SleepFrame(0.08),
+        BotStartedSpeakingFrame(), SleepFrame(0.02),  # the filler audio
+        InterruptionFrame(), SleepFrame(0.02), said("no, track my order"), SleepFrame(0.8),
+    ])
+    assert any(isinstance(f, TTSSpeakFrame) for f in down)
+    assert sum(isinstance(f, InterruptionFrame) for f in down) == 1
+    answers = [d["text"].strip() for k, d in setup.events if k == "answer"]
+    assert answers == ["Sure, tell me the order number."]
+    # The unheard answer of turn 1 is not in the history. The tool call pair stays whole.
+    roles = [m["role"] for m in setup.session.messages]
+    assert roles == ["user", "assistant", "tool", "user", "assistant"]
+
+
+async def test_words_during_the_answer_audio_stop_it_without_a_vad_interruption():
+    llm = FakeLlm(["It costs five hundred fifty taka for one board today.", "Okay."],
+                  delay_s=0.1)
+    setup = Setup(llm)
+    down = await setup.run([
+        said("price of esp32"), SleepFrame(0.25),
+        BotStartedSpeakingFrame(), SleepFrame(0.05),
+        said("stop"), SleepFrame(0.5),
+    ])
+    assert sum(isinstance(f, InterruptionFrame) for f in down) == 1
+    assert [d["text"].strip() for k, d in setup.events if k == "answer"] == ["Okay."]
+    assert setup.session.messages[-2] == {"role": "user", "content": "stop"}
 
 
 async def test_interruption_while_speaking_cancels_turn():
@@ -262,55 +293,24 @@ async def test_interrupted_summary_is_not_heard(monkeypatch):
     assert len(store.placed) == 1
 
 
-async def test_yes_held_before_the_summary_ended_does_not_place_the_order(monkeypatch):
+async def test_yes_during_the_summary_audio_does_not_place_the_order(monkeypatch):
     monkeypatch.setattr("support_agent.tools.uuid.uuid4", lambda: uuid.UUID(int=0))
     place = json.dumps({"summary_id": "00000000"})
     store = FakeStore()
     llm = FakeLlm([[("prepare_order", PREPARE)], SUMMARY_TEXT,
-                   # Turn 2 is the "okay" from the filler time.
-                   [("place_order", place)], "Please say yes now to order.",
-                   # Turn 3 is a real yes after the summary.
-                   [("place_order", place)], "Your order is placed."])
+                   # Turn 2 is the "okay" that the caller said during the summary audio.
+                   [("place_order", place)], "Please listen to the full summary first."])
     setup = Setup(llm, store)
     await setup.run([
-        said("order one esp32"), SleepFrame(0.05),
-        InterruptionFrame(), SleepFrame(0.02), said("okay"), SleepFrame(0.3),
+        said("order one esp32"), SleepFrame(0.3),
         *audio_pair(),  # the filler audio of turn 1
-        *audio_pair(),  # the summary audio of turn 1, in full
-        SleepFrame(0.3),
-        *audio_pair(),  # the filler audio of turn 2
-        *audio_pair(),  # the answer audio of turn 2
-        said("yes"), SleepFrame(0.3),
+        BotStartedSpeakingFrame(), SleepFrame(0.05),  # the summary audio of turn 1
+        said("okay"), SleepFrame(0.3),
     ])
-    assert ("heard", 1) in [(k, d.get("turn")) for k, d in setup.events]
-    place_end = [d for k, d in setup.events if k == "tool_end" and d["name"] == "place_order"]
-    assert [d["ok"] for d in place_end] == [False, True]
-    assert "spoke before the summary ended" in place_end[0]["content"]
-    assert len(store.placed) == 1
-
-
-async def test_held_speech_waits_for_answer_audio_and_can_interrupt_it():
-    llm = FakeLlm([[("prepare_order", PREPARE)], SUMMARY_TEXT, "Yes, I am here."],
-                  delay_s=0.02)
-    setup = Setup(llm)
-    down = await setup.run([
-        said("order one esp32"), SleepFrame(0.05),
-        InterruptionFrame(), SleepFrame(0.02), said("hello?"), SleepFrame(0.5),
-        *audio_pair(),  # the filler audio
-        BotStartedSpeakingFrame(), SleepFrame(0.05),  # the answer audio of turn 1
-        InterruptionFrame(), SleepFrame(0.05),
-        BotStoppedSpeakingFrame(), SleepFrame(0.3),
-    ])
-    interruptions = [i for i, f in enumerate(down) if isinstance(f, InterruptionFrame)]
-    assert len(interruptions) == 1
-    # Turn 1 counts as interrupted: its summary is not heard.
-    assert summary_of(setup.session).heard is False
     assert "heard" not in setup.kinds()
-    # "hello?" runs after the interruption, as turn 2.
-    assert setup.session.customer_turns == 2
-    second_start = index_of(down, LLMFullResponseStartFrame, start=1)
-    assert second_start > interruptions[0]
-    assert setup.session.messages[-2] == {"role": "user", "content": "hello?"}
+    place_end = [d for k, d in setup.events if k == "tool_end" and d["name"] == "place_order"]
+    assert [d["ok"] for d in place_end] == [False]
+    assert store.placed == []
 
 
 async def test_history_keeps_only_the_spoken_part_of_an_interrupted_answer():
@@ -354,19 +354,50 @@ async def test_history_is_not_changed_without_a_tracker():
     assert setup.session.messages[-1]["content"] == "It costs 550 taka. It is in stock."
 
 
-async def test_held_turn_starts_when_answer_audio_does_not_come():
+async def test_words_replace_an_answer_whose_audio_did_not_start():
     llm = FakeLlm(["It costs 550 taka.", "Yes, I am here."])
     setup = Setup(llm)
-    setup.processor._answer_audio_timeout_s = 0.1
+    setup.processor._answer_audio_timeout_s = 5.0
     started: list[float] = []
 
     async def on_event(kind, data):
+        setup.events.append((kind, data))
         if kind == "turn_start":
             started.append(asyncio.get_running_loop().time())
 
     setup.processor._on_event = on_event
-    await setup.run([said("price of esp32"), SleepFrame(0.05), said("hello?"), SleepFrame(0.6)])
-    end = asyncio.get_running_loop().time()
-    assert len(started) == 2
-    # The second turn started after the timeout, before the EndFrame of the test.
-    assert 0.1 <= started[1] - started[0] and end - started[1] > 0.3
+    await setup.run([said("price of esp32"), SleepFrame(0.05), said("hello?"), SleepFrame(1.5)])
+    # The second turn does not wait for the audio of the first answer.
+    assert len(started) == 2 and started[1] - started[0] < 0.5
+    assert [d["text"].strip() for k, d in setup.events if k == "answer"][-1] == "Yes, I am here."
+
+
+async def test_greeting_is_spoken_and_kept_in_the_history():
+    from support_agent.voice.agent_processor import GreetingFrame
+
+    setup = Setup(FakeLlm(["Sure, the ESP32 costs five hundred fifty taka."]))
+    down = await setup.run([
+        GreetingFrame("Hi, thanks for calling Robo Parts BD."), SleepFrame(0.05),
+        *audio_pair(),  # the greeting audio
+        said("price of esp32"), SleepFrame(0.3),
+    ])
+    speak = [f for f in down if isinstance(f, TTSSpeakFrame)]
+    assert [f.text for f in speak] == ["Hi, thanks for calling Robo Parts BD."]
+    assert setup.session.messages[0] == {"role": "assistant",
+                                         "content": "Hi, thanks for calling Robo Parts BD."}
+    # The model sees the greeting, so it does not greet again.
+    assert setup.llm.seen[0][1]["content"] == "Hi, thanks for calling Robo Parts BD."
+    assert ("greeting", "Hi, thanks for calling Robo Parts BD.") in [
+        (k, d.get("text")) for k, d in setup.events]
+
+
+async def test_speech_during_the_greeting_does_not_stop_it():
+    from support_agent.voice.agent_processor import GreetingFrame
+
+    setup = Setup(FakeLlm(["Hello!"]))
+    down = await setup.run([
+        GreetingFrame("Hi there."), SleepFrame(0.02),
+        BotStartedSpeakingFrame(), SleepFrame(0.02),
+        InterruptionFrame(), SleepFrame(0.05),
+    ])
+    assert not any(isinstance(f, InterruptionFrame) for f in down)

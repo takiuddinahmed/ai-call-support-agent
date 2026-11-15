@@ -171,6 +171,15 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
             hub.end_call(call_id)
             busy = False
 
+    # The running warm-up tasks. The set keeps a reference, so that the task is not lost.
+    warm_ups: set[asyncio.Task] = set()
+
+    def start_warm_up(session: Session) -> None:
+        """Loads the language model in the background while the call connects."""
+        task = asyncio.create_task(deps.warm_up_llm(session))
+        warm_ups.add(task)
+        task.add_done_callback(warm_ups.discard)
+
     @router.get("/voice")
     async def voice_page():
         return FileResponse(STATIC / "voice.html")
@@ -196,6 +205,7 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
         connection_seen = None
         try:
             session.channel = "voice"
+            start_warm_up(session)
             await deps.models.ensure_loaded()
             from pipecat.transports.base_transport import TransportParams
             from pipecat.transports.smallwebrtc.request_handler import (
@@ -204,7 +214,7 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
             )
             from pipecat.transports.smallwebrtc.transport import SmallWebRTCTransport
 
-            from support_agent.voice.pipeline import build_task
+            from support_agent.voice.pipeline import build_task, greeting_for
 
             if webrtc is None:
                 webrtc = SmallWebRTCRequestHandler()
@@ -218,7 +228,8 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                 )
                 call_id = hub.start_call("browser", caller_name(session))
                 try:
-                    task = build_task(transport, session, deps, hub, call_id, BROWSER_AUDIO_RATE)
+                    task = build_task(transport, session, deps, hub, call_id, BROWSER_AUDIO_RATE,
+                                      greeting=greeting_for(session))
                 except Exception:
                     hub.end_call(call_id)
                     raise
@@ -331,6 +342,8 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
             start = await read_media_start(websocket)
             if start is None:
                 return
+            session = Session.new(Identity.guest(), "voice")
+            start_warm_up(session)
             await deps.models.ensure_loaded()
             from pipecat.transports.websocket.fastapi import (
                 FastAPIWebsocketParams,
@@ -343,7 +356,7 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                 AsteriskFrameSerializer,
                 caller_from,
             )
-            from support_agent.voice.pipeline import build_task
+            from support_agent.voice.pipeline import build_task, greeting_for
 
             frame_size = phone_frame_size(start.optimal_frame_size)
             transport = FastAPIWebsocketTransport(
@@ -361,11 +374,11 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                     allowed_origins=[],
                 ),
             )
-            session = Session.new(Identity.guest(), "voice")
             call_id = hub.start_call("phone",
                                      caller_from(start, websocket.query_params.get("caller")))
             logger.info(f"Phone call {call_id} started on {start.channel}")
-            task = build_task(transport, session, deps, hub, call_id, SLIN16_RATE)
+            task = build_task(transport, session, deps, hub, call_id, SLIN16_RATE,
+                              greeting=greeting_for(session))
 
             @transport.event_handler("on_client_disconnected")
             async def on_client_disconnected(_transport, _websocket):

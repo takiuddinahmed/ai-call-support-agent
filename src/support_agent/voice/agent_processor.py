@@ -4,16 +4,18 @@ Rules from the voice design ("Agent step", "Interruptions", "Order approval by v
 
 - Each final transcription starts one turn of run_turn(). The turn runs as a task, so that
   process_frame never waits for the model.
-- Only one turn runs at a time. A transcription that comes during a turn, or during the
-  answer audio of a turn, waits in a queue. It starts the next turn after the turn task
-  ended and the answer audio ended.
+- Only one turn runs at a time. The caller words always win: a transcription that comes
+  before the answer audio of the current turn ended stops that turn. The processor cancels
+  the turn task and sends an InterruptionFrame, which stops the filler and the queued
+  answer audio. The new text starts the next turn when the cancelled task ended.
 - At the first tool call of a turn, the processor speaks a filler phrase. If answer text
   already went out in this turn, it does not speak the filler.
 - The audio of each filler gives one BotStartedSpeakingFrame and BotStoppedSpeakingFrame
   pair. The answer audio is the first pair after the first LLMTextFrame of the turn that
   is not a filler pair.
-- An InterruptionFrame before the answer audio does not stop the turn. The processor does
-  not pass it on, so the agent audio continues. The caller speech becomes the next turn.
+- An InterruptionFrame (the VAD found caller speech) before the answer audio does not stop
+  the turn. The processor does not pass it on, so a cough does not stop the filler. If the
+  speech gives words, the transcription stops the turn.
 - An InterruptionFrame after the answer audio starts cancels the turn and goes on to the
   next processors, which stop the agent audio. run_turn keeps the history valid.
 - After an interruption, the answer message in the history keeps only the text that the
@@ -22,18 +24,24 @@ Rules from the voice design ("Agent step", "Interruptions", "Order approval by v
   interruption after the answer audio started, marks the order summaries of that turn as
   heard. Speech that waits in the queue at that moment cannot approve the summary, because
   the caller said it before the summary ended.
+- A GreetingFrame at the start of a call speaks the greeting. The greeting goes into the
+  history as an assistant message. Caller speech does not stop the greeting.
+- The processor sends an "interrupted" event with "by": "speech" (VAD) or "words"
+  (transcription) when it stops a turn.
 """
 
 import asyncio
 from collections import deque
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
+from dataclasses import dataclass
 
 from loguru import logger
 from pipecat.frames.frames import (
     BotStartedSpeakingFrame,
     BotStoppedSpeakingFrame,
     CancelFrame,
+    DataFrame,
     EndFrame,
     Frame,
     InterruptionFrame,
@@ -54,10 +62,10 @@ from support_agent.tools import ToolRunner
 # Customer-facing phrases. The processor uses them in turn, so that two tool calls in a row
 # do not give the same phrase.
 FILLER_PHRASES: list[str] = [
-    "Let me check that.",
-    "One moment, please.",
-    "Let me look that up.",
-    "Please wait a moment.",
+    "Sure, one second.",
+    "Okay, let me check.",
+    "Let me take a look.",
+    "Give me a moment.",
 ]
 
 # If the answer audio does not end in this time after the turn task ended, and the bot is
@@ -65,6 +73,13 @@ FILLER_PHRASES: list[str] = [
 ANSWER_AUDIO_TIMEOUT_S = 10.0
 
 EventCallback = Callable[[str, dict], Awaitable[None]]
+
+
+@dataclass
+class GreetingFrame(DataFrame):
+    """Tells the AgentProcessor to speak the greeting at the start of a call."""
+
+    text: str
 
 
 def _visible_length(text: str) -> int:
@@ -167,8 +182,10 @@ class AgentProcessor(FrameProcessor):
 
         await super().process_frame(frame, direction)
 
-        if isinstance(frame, TranscriptionFrame):
-            self._handle_transcription(frame.text)
+        if isinstance(frame, GreetingFrame):
+            await self._greet(frame.text)
+        elif isinstance(frame, TranscriptionFrame):
+            await self._handle_transcription(frame.text)
         elif isinstance(frame, BotStartedSpeakingFrame):
             self._handle_bot_started()
             await self.push_frame(frame, direction)
@@ -204,11 +221,17 @@ class AgentProcessor(FrameProcessor):
         self._spoken.append(text)
         return True
 
-    def _handle_transcription(self, text: str) -> None:
+    async def _handle_transcription(self, text: str) -> None:
         text = text.strip()
         if not text:
             return
         self._held.append(text)
+        if self._turn_unfinished() and not self._interrupted:
+            # The caller said new words before the answer audio ended. The new words win.
+            # This processor runs this frame in its process task, so it must not run the
+            # base interruption handler: that handler cancels the process task.
+            await self._interrupt_turn(InterruptionFrame(), FrameDirection.DOWNSTREAM,
+                                       by="words")
         self._start_next_turn()
 
     def _handle_bot_started(self) -> None:
@@ -236,9 +259,18 @@ class AgentProcessor(FrameProcessor):
 
     async def _handle_interruption(self, frame: InterruptionFrame, direction: FrameDirection):
         if not self._bot_spoke_this_turn or self._answer_audio_ended:
-            # The caller spoke before the answer audio. The turn continues and the next
-            # transcription waits for it. The frame stops here, so the agent audio continues.
+            # The caller spoke before the answer audio. The turn continues until the speech
+            # gives words. The frame stops here, so the filler audio continues.
+            await self._emit("caller_speech", {"stopped_answer": False})
             return
+        # The base class resets the frame queue of this processor.
+        await super().process_frame(frame, direction)
+        await self._interrupt_turn(frame, direction, by="speech")
+        self._start_next_turn()
+
+    async def _interrupt_turn(self, frame: InterruptionFrame, direction: FrameDirection,
+                              by: str) -> None:
+        """Stops the current turn and its audio, and passes the frame on."""
         self._interrupted = True
         self._answer_audio_ended = True
         # The interruption stops all queued agent audio, also a filler that did not play.
@@ -253,12 +285,14 @@ class AgentProcessor(FrameProcessor):
                 self._turn_task.cancel()
         else:
             self._keep_heard_answer()
-        # The base class resets the frame queue of this processor.
-        await super().process_frame(frame, direction)
         await self.push_frame(frame, direction)
-        self._start_next_turn()
+        await self._emit("interrupted", {"by": by})
 
     # Turns
+
+    def _turn_unfinished(self) -> bool:
+        """True while the turn task runs or its answer audio did not end."""
+        return self._turn_task is not None or not self._answer_audio_settled()
 
     def _answer_audio_settled(self) -> bool:
         if self._ending:
@@ -326,6 +360,16 @@ class AgentProcessor(FrameProcessor):
         # SpokenTextTracker ignores the filler text, because append_to_context is False.
         await self.push_frame(TTSSpeakFrame(phrase, append_to_context=False))
         await self._emit("filler", {"text": phrase})
+
+    async def _greet(self, text: str) -> None:
+        """Speaks the greeting and adds it to the history, so the model does not greet again.
+
+        The greeting audio counts as a filler pair: caller speech does not stop it.
+        """
+        self._filler_pairs_due += 1
+        self._session.messages.append({"role": "assistant", "content": text})
+        await self.push_frame(TTSSpeakFrame(text, append_to_context=False))
+        await self._emit("greeting", {"text": text})
 
     async def _wait_for_answer_audio(self) -> None:
         """Stops the wait for answer audio that does not come, so that held turns run."""

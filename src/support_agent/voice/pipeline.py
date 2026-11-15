@@ -43,7 +43,12 @@ from pipecat.utils.time import time_now_iso8601
 
 from support_agent.session import Session
 from support_agent.tools import ToolRunner
-from support_agent.voice.agent_processor import AgentProcessor, EventCallback, SpokenTextTracker
+from support_agent.voice.agent_processor import (
+    AgentProcessor,
+    EventCallback,
+    GreetingFrame,
+    SpokenTextTracker,
+)
 from support_agent.voice.debug_hub import DebugHub
 from support_agent.voice.deps import VoiceDeps
 from support_agent.voice.timing import TurnTimer
@@ -163,9 +168,20 @@ class SharedKokoroTTSService(KokoroTTSService):
             raise ValueError(f"Kokoro TTS voice '{voice}' is not in the voices file")
 
 
+def greeting_for(session: Session) -> str:
+    """The first words of the agent in a call. A logged-in caller hears the first name."""
+    customer = session.identity.customer
+    if session.identity.kind == "customer" and customer and customer.first_name:
+        return f"Hi {customer.first_name}, thanks for calling Robo Parts BD. How can I help?"
+    return "Hi, thanks for calling Robo Parts BD. How can I help?"
+
+
 def build_task(transport: BaseTransport, session: Session, deps: VoiceDeps, hub: DebugHub,
-               call_id: str, audio_rate: int) -> PipelineWorker:
-    """Builds the pipeline of one call. The voice models must be loaded first."""
+               call_id: str, audio_rate: int, greeting: str | None = None) -> PipelineWorker:
+    """Builds the pipeline of one call. The voice models must be loaded first.
+
+    If `greeting` is set, the agent speaks it when the caller connects.
+    """
     if not deps.models.loaded:
         raise RuntimeError("Load the voice models before the call starts.")
     settings = deps.settings
@@ -214,9 +230,15 @@ def build_task(transport: BaseTransport, session: Session, deps: VoiceDeps, hub:
         # text that the caller heard.
         SpokenTextTracker(agent, on_event=on_event),
     ])
-    return PipelineWorker(
+    worker = PipelineWorker(
         pipeline,
         params=PipelineParams(audio_in_sample_rate=audio_rate, audio_out_sample_rate=audio_rate),
         observers=[TurnTimer(on_event)],
         enable_rtvi=False,
     )
+    if greeting:
+        @transport.event_handler("on_client_connected")
+        async def on_client_connected(_transport, _client):
+            await worker.queue_frame(GreetingFrame(greeting))
+
+    return worker

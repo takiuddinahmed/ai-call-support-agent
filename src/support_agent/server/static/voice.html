@@ -263,6 +263,14 @@ function handle(event) {
       row.cells.spoken.appendChild(span);
       return;
     }
+    case "interrupted": {
+      // The caller stopped this turn: "speech" is the VAD, "words" is a transcription.
+      const span = document.createElement("span");
+      span.className = "filler";
+      span.textContent = `[stopped by the caller ${d.by}] `;
+      current(call).cells.spoken.appendChild(span);
+      return;
+    }
     case "first_audio":
       current(call).cells.first_audio.textContent = d.ms;
       return;
