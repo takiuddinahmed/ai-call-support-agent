@@ -46,8 +46,11 @@ async def test_interruption_flushes_media():
     assert await AsteriskFrameSerializer().serialize(InterruptionFrame()) == "FLUSH_MEDIA"
 
 
-async def test_hangup_ends_call():
-    assert isinstance(await AsteriskFrameSerializer().deserialize("HANGUP"), EndFrame)
+async def test_hangup_cancels_the_call():
+    # A CancelFrame, not an EndFrame: the caller is gone, so the held turns must not run.
+    frame = await AsteriskFrameSerializer().deserialize("HANGUP")
+    assert isinstance(frame, CancelFrame)
+    assert not isinstance(frame, EndFrame)
 
 
 async def test_end_of_call_hangs_up():

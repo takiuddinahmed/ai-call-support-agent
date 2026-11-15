@@ -184,3 +184,14 @@ async def test_watch_cancels_the_call_when_the_connection_ends(event):
     await connection.fire(event)
     assert len(cancel.reasons) == 1
     watcher.cancel()
+
+
+async def test_watch_ends_a_browser_call_at_the_maximum_length():
+    cancel = CancelRecorder()
+    watcher = watch_connection(FakeConnection("connected"), cancel, connect_timeout_s=0.02,
+                               max_call_s=0.1)
+    await asyncio.sleep(0.05)
+    assert cancel.reasons == []
+    await asyncio.sleep(0.15)
+    assert cancel.reasons == ["The call reached the maximum length."]
+    assert watcher.done()

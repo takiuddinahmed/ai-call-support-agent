@@ -59,3 +59,23 @@ async def test_slow_subscriber_drops_oldest_and_never_blocks():
     got = [(await asyncio.wait_for(anext(stream), 1))["data"]["i"] for _ in range(3)]
     assert got == [7, 8, 9]
     await stream.aclose()
+
+
+def test_tool_data_hides_the_local_part_of_emails():
+    hub = DebugHub()
+    call_id = hub.start_call("browser", "guest")
+    hub.publish(call_id, "tool_start", {
+        "name": "prepare_order",
+        "arguments": '{"email": "rahim.k+1@example.com", "address": {"city": "Dhaka", '
+                     '"phone": "01712345678"}}',
+    })
+    hub.publish(call_id, "tool_end", {
+        "name": "prepare_order", "ok": True,
+        "content": '{"email": "voice-8801712345678@guest.robopartsbd.local", "total": 630}',
+    })
+    start, end = hub.calls()[0]["events"][1:]
+    assert start["data"]["arguments"] == (
+        '{"email": "***@example.com", "address": {"city": "Dhaka", "phone": "01712345678"}}'
+    )
+    assert end["data"]["content"] == '{"email": "***@guest.robopartsbd.local", "total": 630}'
+    assert end["data"]["name"] == "prepare_order" and end["data"]["ok"] is True

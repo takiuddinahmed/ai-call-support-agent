@@ -30,6 +30,9 @@ class OrderSummary:
     quote: Quote
     customer_turn_at_creation: int
     heard: bool = False
+    # On the voice channel, place_order needs a customer turn after this turn number.
+    # None means the turn of creation.
+    approvable_after_turn: int | None = None
 
 
 @dataclass
@@ -48,11 +51,18 @@ class Session:
     def new(cls, identity: Identity, channel: Channel = "chat") -> "Session":
         return cls(id=uuid.uuid4().hex, identity=identity, channel=channel)
 
-    def mark_summaries_heard(self, created_at_turn: int) -> None:
-        """Marks the summaries from that customer turn as read aloud to the customer."""
+    def mark_summaries_heard(self, created_at_turn: int,
+                             approvable_after_turn: int | None = None) -> None:
+        """Marks the summaries from that customer turn as read aloud to the customer.
+
+        approvable_after_turn is the last customer turn that cannot approve the summaries.
+        The voice processor sets it after the speech that waits for a turn, because the
+        caller said that speech before the end of the summary.
+        """
         for summary in self.summaries.values():
             if summary.customer_turn_at_creation == created_at_turn:
                 summary.heard = True
+                summary.approvable_after_turn = approvable_after_turn
 
     def start_over(self, identity: Identity) -> None:
         """Changes the customer and forgets the conversation, the summaries, and the

@@ -366,8 +366,14 @@ class ToolRunner:
         summary = self.session.summaries.get(summary_id)
         if summary is None:
             raise ToolError("Unknown summary_id. Call prepare_order first.")
-        if self.session.channel == "voice" and not summary.heard:
-            raise ToolError("Read the full summary to the customer again, then ask for a clear yes.")
+        if self.session.channel == "voice":
+            if not summary.heard:
+                raise ToolError("Call prepare_order again with the same details, read the new "
+                                "summary in full, then ask for a clear yes.")
+            if (summary.approvable_after_turn is not None
+                    and self.session.customer_turns <= summary.approvable_after_turn):
+                raise ToolError("The customer spoke before the summary ended. "
+                                "Ask for a clear yes now.")
         if self.session.customer_turns <= summary.customer_turn_at_creation:
             raise ToolError("Read the summary to the customer and wait for a clear yes.")
         # Remove the summary before the store call, so that a retry after an unclear failure

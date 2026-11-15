@@ -20,7 +20,8 @@ Rules from the voice design ("Agent step", "Interruptions", "Order approval by v
   text-to-speech step spoke. SpokenTextTracker reports that text.
 - The BotStoppedSpeakingFrame that ends the answer audio of a finished turn, with no
   interruption after the answer audio started, marks the order summaries of that turn as
-  heard.
+  heard. Speech that waits in the queue at that moment cannot approve the summary, because
+  the caller said it before the summary ended.
 """
 
 import asyncio
@@ -377,7 +378,13 @@ class AgentProcessor(FrameProcessor):
             return
         ids = [s.id for s in self._session.summaries.values()
                if s.customer_turn_at_creation == self._turn_no]
-        self._session.mark_summaries_heard(self._turn_no)
+        # Each held text becomes one customer turn. The caller said them before the end of
+        # the summary, so they cannot approve it. No turn runs now, so customer_turns is the
+        # number of the last turn that started.
+        self._session.mark_summaries_heard(
+            self._turn_no,
+            approvable_after_turn=self._session.customer_turns + len(self._held),
+        )
         await self._emit("heard", {"turn": self._turn_no, "summary_ids": ids})
 
     async def _emit(self, kind: str, data: dict) -> None:

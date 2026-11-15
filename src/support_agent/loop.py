@@ -65,6 +65,14 @@ def _add_tool_message(session: Session, call_id: str, content: str) -> None:
     session.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
 
+def _drop_turn_summaries(session: Session) -> None:
+    """Deletes the order summaries of the current turn, so that a later "yes" cannot place
+    a summary that the customer did not get."""
+    for summary_id in [s.id for s in session.summaries.values()
+                       if s.customer_turn_at_creation == session.customer_turns]:
+        del session.summaries[summary_id]
+
+
 async def _wait_through_cancels(tool: asyncio.Future) -> ToolResult:
     """Waits until the tool task is done. Each further cancel during the wait has no effect."""
     while not tool.done():
@@ -159,6 +167,8 @@ async def run_turn(
         except Exception as error:  # noqa: BLE001  any model failure ends the turn with one event
             if session.messages[-1]["role"] == "user":
                 session.messages.pop()
+            # The customer did not get the summary of this turn, the same as at the fallback.
+            _drop_turn_summaries(session)
             yield event("error", message=_error_message(error))
             return
 
@@ -182,9 +192,7 @@ async def run_turn(
             # The customer gets only the fallback line, not an order summary from this turn.
             # So a later "yes" must not place that summary. The delete comes before the
             # first yield, because the caller can close the generator at any yield.
-            for summary_id in [s.id for s in session.summaries.values()
-                               if s.customer_turn_at_creation == session.customer_turns]:
-                del session.summaries[summary_id]
+            _drop_turn_summaries(session)
             yield event("error", message=EMPTY_ANSWER_ERROR, round=round_no, fallback=True)
             text = EMPTY_ANSWER_FALLBACK
             yield event("text", text=text)

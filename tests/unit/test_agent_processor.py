@@ -238,7 +238,10 @@ async def test_interrupted_summary_is_not_heard(monkeypatch):
     place = json.dumps({"summary_id": "00000000"})
     store = FakeStore()
     llm = FakeLlm([[("prepare_order", PREPARE)], SUMMARY_TEXT,
-                   [("place_order", place)], "I must read the summary again."])
+                   # Turn 2: place_order fails, so the model makes a new summary.
+                   [("place_order", place)], [("prepare_order", PREPARE)], SUMMARY_TEXT,
+                   # Turn 3: the caller heard the new summary in full.
+                   [("place_order", place)], "Your order is placed."])
     setup = Setup(llm, store)
     await setup.run([
         said("order one esp32"), SleepFrame(0.3),
@@ -247,12 +250,43 @@ async def test_interrupted_summary_is_not_heard(monkeypatch):
         InterruptionFrame(), SleepFrame(0.05),
         BotStoppedSpeakingFrame(), SleepFrame(0.05),
         said("yes"), SleepFrame(0.3),
+        *audio_pair(),  # the filler audio of turn 2
+        *audio_pair(),  # the new summary of turn 2, in full
+        said("yes"), SleepFrame(0.3),
     ])
-    assert summary_of(setup.session).heard is False
-    assert "heard" not in setup.kinds()
+    # The interrupted summary of turn 1 is not heard. The new summary of turn 2 is heard.
+    assert [d.get("turn") for k, d in setup.events if k == "heard"] == [2]
     place_end = [d for k, d in setup.events if k == "tool_end" and d["name"] == "place_order"]
-    assert len(place_end) == 1 and place_end[0]["ok"] is False
-    assert store.placed == []
+    assert [d["ok"] for d in place_end] == [False, True]
+    assert "Call prepare_order again" in place_end[0]["content"]
+    assert len(store.placed) == 1
+
+
+async def test_yes_held_before_the_summary_ended_does_not_place_the_order(monkeypatch):
+    monkeypatch.setattr("support_agent.tools.uuid.uuid4", lambda: uuid.UUID(int=0))
+    place = json.dumps({"summary_id": "00000000"})
+    store = FakeStore()
+    llm = FakeLlm([[("prepare_order", PREPARE)], SUMMARY_TEXT,
+                   # Turn 2 is the "okay" from the filler time.
+                   [("place_order", place)], "Please say yes now to order.",
+                   # Turn 3 is a real yes after the summary.
+                   [("place_order", place)], "Your order is placed."])
+    setup = Setup(llm, store)
+    await setup.run([
+        said("order one esp32"), SleepFrame(0.05),
+        InterruptionFrame(), SleepFrame(0.02), said("okay"), SleepFrame(0.3),
+        *audio_pair(),  # the filler audio of turn 1
+        *audio_pair(),  # the summary audio of turn 1, in full
+        SleepFrame(0.3),
+        *audio_pair(),  # the filler audio of turn 2
+        *audio_pair(),  # the answer audio of turn 2
+        said("yes"), SleepFrame(0.3),
+    ])
+    assert ("heard", 1) in [(k, d.get("turn")) for k, d in setup.events]
+    place_end = [d for k, d in setup.events if k == "tool_end" and d["name"] == "place_order"]
+    assert [d["ok"] for d in place_end] == [False, True]
+    assert "spoke before the summary ended" in place_end[0]["content"]
+    assert len(store.placed) == 1
 
 
 async def test_held_speech_waits_for_answer_audio_and_can_interrupt_it():

@@ -1,6 +1,7 @@
 """Chat and voice server: login, chat with streamed agent events, the model list, and
 browser voice calls."""
 
+from contextlib import aclosing
 from pathlib import Path
 from typing import Literal
 
@@ -117,12 +118,14 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
 
         async def stream():
             runner = ToolRunner(store, session)
-            async for event in run_turn(
+            # aclosing ends the turn at once when the client closes the connection.
+            async with aclosing(run_turn(
                 session, body.message, llm, runner, model, settings.max_tool_rounds,
                 reasoning_effort_after_tools=settings.llm_reasoning_effort_after_tools,
                 max_prompt_tokens=settings.max_prompt_tokens,
-            ):
-                yield f"data: {event.to_json()}\n\n"
+            )) as events:
+                async for event in events:
+                    yield f"data: {event.to_json()}\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

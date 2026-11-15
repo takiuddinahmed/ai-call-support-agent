@@ -53,14 +53,17 @@ The right side of the page shows each customer turn:
 
 Use the "Model" menu to switch between the models in Ollama. Use the "Channel" menu to switch to the voice style: short answers with no lists and with numbers in words.
 
+The "voice" channel of the chat page cannot place orders. On the voice channel, `place_order` needs an order summary that the caller heard. Only the voice call pipeline marks a summary as heard, and the chat page has no voice call pipeline. Use the chat channel to place an order on the chat page.
+
 ## Voice calls
 
-The voice agent speaks English. It listens with Whisper (speech-to-text), thinks with the Ollama model, and speaks with Kokoro (text-to-speech). The server must run on the branch `feat/voice-agent`.
+The voice agent speaks English. It listens with Whisper (speech-to-text), thinks with the Ollama model, and speaks with Kokoro (text-to-speech).
 
 Rules for all voice calls:
 
 - The server takes one call at a time. A second call gets a busy answer.
 - The first call after a server start waits about 50 s for the model load.
+- The server ends a call after `MAX_CALL_SECONDS` (default 900 s). This limit applies to browser calls and phone calls.
 - A phone call is a guest call. The caller cannot log in by phone.
 - The agent asks for a phone number, not an email. A guest order without an email gets an email made from the phone number.
 - Before the agent places an order, it reads back what it heard. The caller must say a clear yes.
@@ -79,17 +82,17 @@ Asterisk is in the demo store, on the branch `feat/asterisk` of `../demo-store`.
 
 1. In `../demo-store/.env`, set `ASTERISK_LAN_IP`, `ASTERISK_PHONE_PASSWORD`, and `AGENT_PHONE_TOKEN`. Get the Mac LAN address with `ipconfig getifaddr en0`.
 2. Set the same `AGENT_PHONE_TOKEN` in the `.env` of this folder. If the two values differ, every phone call fails. If the value is empty, the agent refuses every phone call.
-3. Start Asterisk in `../demo-store`:
+3. Start Asterisk in `../demo-store`. The phone service has its own compose file. If a phone setting is missing in `.env`, the command stops and names the setting.
 
    ```sh
-   docker compose up -d asterisk
+   docker compose -f docker-compose.phone.yml up -d
    ```
 
-4. Start the agent server on this branch.
+4. Start the agent server.
 5. Register a softphone with the configuration below.
 6. Dial 2000 for the agent. Dial 600 for an echo test of the phone link.
 
-If the Mac LAN address changes, change `ASTERISK_LAN_IP` and run `docker compose up -d asterisk` again.
+If the Mac LAN address changes, change `ASTERISK_LAN_IP` and run `docker compose -f docker-compose.phone.yml up -d` again.
 
 Softphone configuration. These are the same in Linphone (iPhone, on the same Wi-Fi as the Mac) and in Telephone (the Mac app from the Mac App Store):
 
@@ -101,9 +104,9 @@ Softphone configuration. These are the same in Linphone (iPhone, on the same Wi-
 | Transport | UDP |
 | Codecs | G.722 first, then G.711 (PCMU and PCMA). Turn off the others. |
 
-In Linphone, choose "Use a SIP account", not the Linphone account. Allow the local network permission on iOS, and keep the app open. To check the registration, run `docker compose exec asterisk asterisk -rx "pjsip show contacts"` in `../demo-store`. Contact 1001 must show `Avail`.
+In Linphone, choose "Use a SIP account", not the Linphone account. Allow the local network permission on iOS, and keep the app open. To check the registration, run `docker compose -f docker-compose.phone.yml exec asterisk asterisk -rx "pjsip show contacts"` in `../demo-store`. Contact 1001 must show `Avail`.
 
-The phone route is `/api/voice/asterisk`. Asterisk sends `AGENT_PHONE_TOKEN` as the HTTP Basic password. The agent hangs up a phone call after `MAX_CALL_SECONDS`.
+The phone route is `/api/voice/asterisk`. Asterisk sends `AGENT_PHONE_TOKEN` as the HTTP Basic password. The agent hangs up a phone call after `MAX_CALL_SECONDS`, and it ends a browser call after the same time.
 
 ### Voice benchmark
 
@@ -171,7 +174,7 @@ ollama stop <model>
 | `MAX_PROMPT_TOKENS` | `3200` | The prompt budget in estimated tokens. It must stay under the model context. See "Model context". |
 | `CATALOG_CACHE_SECONDS` | `300` | How long the agent keeps the product list |
 | `AGENT_PHONE_TOKEN` | empty | Shared secret of the Asterisk phone route. Use the same value in `../demo-store/.env`. Empty refuses every phone call. |
-| `MAX_CALL_SECONDS` | `900` | The agent hangs up a phone call after this time |
+| `MAX_CALL_SECONDS` | `900` | The server ends a browser call or a phone call after this time |
 | `VOICE_STT_MODEL` | `mlx-community/whisper-large-v3-turbo` | The Whisper model for speech-to-text |
 | `VOICE_TTS_VOICE` | `af_heart` | The Kokoro voice of the agent |
 | `VOICE_ASTERISK_PATH` | `/api/voice/asterisk` | The WebSocket path for phone calls |

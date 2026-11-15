@@ -74,7 +74,7 @@ async def test_guest_order_status_needs_proof():
 
 async def test_customer_order_status_uses_account_email():
     store = FakeStore()
-    ok, data = await run(customer(), store, "get_order_status", display_id=3)
+    ok, _data = await run(customer(), store, "get_order_status", display_id=3)
     assert ok and store.calls[-1] == ("lookup_order", 3, "rahim@example.com", None)
 
 
@@ -158,9 +158,9 @@ async def test_filters_that_match_nothing_fall_back_to_the_words():
 
 # Final review fixes
 
-import httpx  # noqa: E402
+import httpx
 
-from support_agent.store.client import StoreError  # noqa: E402
+from support_agent.store.client import StoreError
 
 
 @pytest.mark.parametrize("name,args", [
@@ -228,9 +228,26 @@ async def test_voice_place_order_needs_heard_summary():
     turn = session.customer_turns
     session.customer_turns += 1
     ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
-    assert not ok and "Read the full summary to the customer again" in message
+    assert not ok and "Call prepare_order again with the same details" in message
     assert store.placed == []
     session.mark_summaries_heard(turn)
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_voice_place_order_needs_a_turn_after_the_held_speech():
+    store = FakeStore()
+    session = voice_guest()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert ok
+    turn = session.customer_turns
+    # One caller text waited during the summary audio. It becomes turn + 1.
+    session.mark_summaries_heard(turn, approvable_after_turn=turn + 1)
+    session.customer_turns = turn + 1
+    ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok and "spoke before the summary ended" in message
+    assert store.placed == []
+    session.customer_turns = turn + 2
     ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
     assert ok and len(store.placed) == 1
 

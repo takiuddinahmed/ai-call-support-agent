@@ -98,8 +98,11 @@ def require_local_client(request: Request) -> None:
 
 
 def watch_connection(connection, cancel: CancelCall,
-                     connect_timeout_s: float = CONNECT_TIMEOUT_S) -> asyncio.Task:
+                     connect_timeout_s: float = CONNECT_TIMEOUT_S,
+                     max_call_s: float | None = None) -> asyncio.Task:
     """Ends the call if the WebRTC connection closes, fails, or does not connect in time.
+
+    If max_call_s is set, the call also ends max_call_s after the start of the watch.
 
     In Pipecat 1.16.0, SmallWebRTCConnection calls its handlers with the name of each new
     peer connection state, also "closed" and "failed". A connection that stays in
@@ -113,10 +116,18 @@ def watch_connection(connection, cancel: CancelCall,
     connection.add_event_handler("failed", on_end)
 
     async def check_connected() -> None:
+        loop = asyncio.get_running_loop()
+        start = loop.time()
         await asyncio.sleep(connect_timeout_s)
         if connection.pc.connectionState != "connected":
             logger.warning("The WebRTC connection did not connect in time. The call ends.")
             await cancel("The WebRTC connection did not connect.")
+            return
+        if max_call_s is None:
+            return
+        await asyncio.sleep(max(0.0, start + max_call_s - loop.time()))
+        logger.info(f"The browser call reached {max_call_s} s. The call ends.")
+        await cancel("The call reached the maximum length.")
 
     return asyncio.create_task(check_connected())
 
@@ -219,7 +230,8 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                 async def on_client_disconnected(_transport, _client):
                     await cancel("The caller ended the call.")
 
-                watcher = watch_connection(connection, cancel)
+                watcher = watch_connection(connection, cancel,
+                                           max_call_s=deps.settings.max_call_seconds)
                 keep(watcher)
                 keep(asyncio.create_task(run_call(task, call_id, watcher)))
                 worker = task

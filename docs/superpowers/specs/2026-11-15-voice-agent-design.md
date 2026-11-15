@@ -113,7 +113,7 @@ When the caller talks while the agent speaks, Pipecat stops the agent audio. The
 
 ### Order approval by voice
 
-On the voice channel, `place_order` accepts a summary only after the caller heard the full summary audio. After the text-to-speech step finishes the answer that contains the summary, the agent step marks the summary as heard. If the caller interrupted the summary, the agent must read it again before a yes counts. This rule follows the chat anti-goal that the agent first reads back the items, the address, the delivery option, and the total. The chat channel keeps its current rule.
+On the voice channel, `place_order` accepts a summary only after the caller heard the full summary audio. After the text-to-speech step finishes the answer that contains the summary, the agent step marks the summary as heard. If the caller interrupted the summary, the agent must call `prepare_order` again and read the new summary before a yes counts. A yes that the caller said before the end of the summary audio does not count. Only a customer turn after the end of the summary audio can approve the summary. This rule follows the chat anti-goal that the agent first reads back the items, the address, the delivery option, and the total. The chat channel keeps its current rule.
 
 ### IP phone channel
 

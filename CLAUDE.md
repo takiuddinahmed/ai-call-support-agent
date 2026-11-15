@@ -29,7 +29,7 @@ uv run python -m support_agent.voice.bench report <json>        # rebuild a call
 uv run python -m support_agent.bench --model <m> --cases 'src/support_agent/bench/cases/1-*.yaml' --reasoning none
 ```
 
-Start the store with `docker compose up -d` in `../demo-store`. Its compose file pins `name: ai-audio-call`, so the data volumes keep their names.
+Start the store with `docker compose up -d` in `../demo-store`. Its compose file pins `name: ai-audio-call`, so the data volumes keep their names. Start the Asterisk phone service with `docker compose -f docker-compose.phone.yml up -d` in `../demo-store`. That file needs the phone settings in `../demo-store/.env`. The store file does not need them.
 
 The `store` tests and the benchmark order cases place real orders in the demo store. Store tests register a new customer for each run. Do not place test orders as the sample customers (for example `rahim@example.com`), because the demo shows their order lists.
 
@@ -44,7 +44,7 @@ The package `src/support_agent` is a core library plus the chat server and the v
 - `instructions.py` builds the system prompt for the channel `chat` or `voice`. Voice style means one to three sentences, no lists, numbers in words.
 - `loop.py` `run_turn()` streams one customer turn and yields timed `AgentEvent`s. The event types are `turn_start`, `llm_start`, `first_token`, `text`, `tool_call_start`, `llm_end`, `tool_start`, `tool_end`, `answer`, and `error`. When the model starts to name a tool, `tool_call_start` comes before the arguments end. The voice filler uses it. If the caller does not close the generator, `run_turn` is not cancel-safe. Always use `contextlib.aclosing(run_turn(...))`. After `max_tool_rounds`, it makes one last model call with no tools, so that the model must answer. Each model call sends a bounded history from `history.py` `fit_history()` (budget `max_prompt_tokens`). If a model call gives no text and no tool call, the turn yields an `error` event with `fallback: true` and answers with `EMPTY_ANSWER_FALLBACK`. If `llm_reasoning_effort_after_tools` is not empty, the model calls after a tool result use it.
 - `history.py` keeps the prompt under the budget. It shrinks old tool results first, then drops the oldest whole turns. It keeps tool call pairs whole, the current turn, and the tool result of the pending order summary. It does not change `session.messages`, because the voice processor keeps indexes into that list. `Session.history` stores the window, and the window moves only forward, so the prompt start stays the same for the model server prompt cache.
-- `llm.py` is the OpenAI-compatible streaming client. It sends `reasoning_effort` from the configuration.
+- `llm.py` is the OpenAI-compatible streaming client. It sends `reasoning_effort` from the settings.
 - `server/app.py` serves the chat page and streams the events as server-sent events to the debug panel. `create_app(settings, store=, llm=, models=)` takes injected parts for tests. Sessions live in memory.
 - `voice/` is the voice package. It imports Pipecat only inside functions, so the chat server loads no Pipecat module.
   - `pipeline.py` builds the call pipeline: VAD, smart turn, Whisper, `TurnTextGate`, `AgentProcessor`, Kokoro, and `SpokenTextTracker`.
@@ -61,6 +61,7 @@ The package `src/support_agent` is a core library plus the chat server and the v
 These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agent-design.md`. Do not weaken them.
 
 - Order approval: `prepare_order` stores one summary (it clears older ones) with `customer_turn_at_creation`. `place_order` accepts only that summary ID, and only after a later customer message. It removes the summary before the store call, so a retry cannot place a second order. The model judges whether the customer's reply means "yes".
+- Voice order approval: `place_order` on the voice channel needs a summary that the caller heard in full. The voice processor marks it heard at the end of the answer audio. It also sets `approvable_after_turn` after the speech that waited in the queue at that moment. Only a later customer turn can approve the summary. The chat page "voice" channel cannot place orders, because nothing marks a summary heard there.
 - Privacy: a guest sees an order only with the order number and the matching email or phone. A tracking number alone gives the delivery status and history, never the items or the address.
 - Facts: prices, stock, products, and order status come only from tool results. The instructions forbid a model-made order summary or total.
 
@@ -77,7 +78,7 @@ These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agen
 - `phone_token` (env `AGENT_PHONE_TOKEN`): the shared secret of the phone route. Asterisk sends it as the HTTP Basic password. Empty refuses every phone call. The value must match `../demo-store/.env`.
 - The phone route refuses a request with an `Origin` header, so a web page cannot start a phone call.
 - The debug routes accept only local clients. Docker Desktop shows each container as `127.0.0.1`, so containers on this Mac are trusted clients.
-- `max_call_seconds` ends a phone call after 900 s.
+- `max_call_seconds` ends a browser call or a phone call after 900 s.
 
 ## Voice measurements
 

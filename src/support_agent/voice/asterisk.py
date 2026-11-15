@@ -9,7 +9,7 @@ Asterisk 22.11 chan_websocket facts (docs.asterisk.org, "WebSocket Channel Drive
 - Media is BINARY messages of raw audio. The codec slin16 is signed 16-bit
   little-endian mono PCM at 16000 Hz. One 20 ms frame is 640 bytes.
 - The agent sends commands as TEXT messages. FLUSH_MEDIA drops the queued agent audio.
-  HANGUP ends the call.
+  HANGUP ends the call. A HANGUP from Asterisk becomes a CancelFrame.
 
 The server imports routes.py at start, and routes.py imports this module only at the
 first phone call. This module imports Pipecat, so it must stay out of the server start.
@@ -22,6 +22,7 @@ from dataclasses import dataclass
 from loguru import logger
 from pipecat.frames.frames import (
     AudioRawFrame,
+    CancelFrame,
     EndFrame,
     Frame,
     InputAudioRawFrame,
@@ -137,7 +138,9 @@ class AsteriskFrameSerializer(FrameSerializer):
             return InputAudioRawFrame(audio=data, sample_rate=SLIN16_RATE, num_channels=1)
         name, _fields = parse_control(data)
         if name == "HANGUP":
-            return EndFrame()
+            # The caller is gone. A CancelFrame stops the call at once, so the held turns
+            # do not run. An EndFrame lets them run.
+            return CancelFrame()
         if name == "MEDIA_XOFF":
             logger.warning("Asterisk sent MEDIA_XOFF: its queue of agent audio is full.")
         elif name == "MEDIA_XON":

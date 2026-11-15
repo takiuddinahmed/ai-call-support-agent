@@ -48,7 +48,7 @@ class Settings(BaseSettings):
     # phone route refuses every call.
     phone_token: str = Field("", validation_alias=AliasChoices("AGENT_PHONE_TOKEN",
                                                                 "phone_token"))
-    # The phone route ends a call after this time, in seconds.
+    # The server ends a browser call or a phone call after this time, in seconds.
     max_call_seconds: int = 900
     # Host names that the server accepts in the Host header. Unknown names get 400.
     # Asterisk in Docker connects to the phone route with host.docker.internal. That name gets

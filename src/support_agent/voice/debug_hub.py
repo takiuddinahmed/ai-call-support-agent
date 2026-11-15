@@ -1,6 +1,7 @@
 """In-memory hub that streams debug events of voice calls."""
 
 import asyncio
+import re
 import time
 import uuid
 from collections import deque
@@ -9,6 +10,21 @@ from typing import Literal
 
 MAX_CALLS = 20
 QUEUE_SIZE = 200
+# The events that carry tool arguments and tool results.
+TOOL_EVENTS = ("tool_start", "tool_end")
+# The local part of an email address, before the "@".
+EMAIL_LOCAL_PART = re.compile(r"[A-Za-z0-9._%+-]+@(?=[A-Za-z0-9-]+(\.[A-Za-z0-9-]+)+)")
+
+
+def mask_emails(value):
+    """Replaces the local part of each email address in the strings of value with "***"."""
+    if isinstance(value, str):
+        return EMAIL_LOCAL_PART.sub("***@", value)
+    if isinstance(value, dict):
+        return {key: mask_emails(item) for key, item in value.items()}
+    if isinstance(value, list):
+        return [mask_emails(item) for item in value]
+    return value
 
 
 class DebugHub:
@@ -40,6 +56,9 @@ class DebugHub:
         call = self._find(call_id)
         if call is None:
             return
+        if kind in TOOL_EVENTS:
+            # The debug panel does not show the email addresses of customers.
+            data = mask_emails(data)
         event = {"call_id": call_id, "kind": kind, "data": data, "at": time.time()}
         call["events"].append(event)
         for queue in self._subscribers:

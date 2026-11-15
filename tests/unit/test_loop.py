@@ -267,3 +267,39 @@ async def test_fallback_removes_the_summary_when_the_caller_closes_at_the_error(
             if e.type == "error":
                 break  # For example, the chat client closed the connection.
     assert session.summaries == {}
+
+
+class FailingSecondRoundLlm(FakeLlm):
+    """Plays the first round, then the model server fails."""
+
+    async def stream(self, model, messages, tools, reasoning_effort=None):
+        if self.rounds:
+            async for chunk in super().stream(model, messages, tools, reasoning_effort):
+                yield chunk
+            return
+        raise httpx.ConnectError("refused")
+
+
+async def test_model_error_after_prepare_order_removes_the_summary():
+    store = FakeStore()
+    session = Session.new(Identity(kind="customer", token="tok", customer=RAHIM), "chat")
+    prepare = json.dumps({"items": [{"handle": "esp32-devkit-v1", "quantity": 2}]})
+    llm = FailingSecondRoundLlm([[("prepare_order", prepare)]])
+    async with aclosing(run_turn(session, "order two esp32", llm, ToolRunner(store, session),
+                                 "m", 6)) as turn:
+        async for e in turn:
+            if e.type == "error":
+                # The summary is gone before the error event, because the caller can close
+                # the generator at this event.
+                assert session.summaries == {}
+                break
+    assert session.summaries == {}
+
+
+async def test_model_error_keeps_a_summary_from_an_earlier_turn():
+    store = FakeStore()
+    session, summary_id = await customer_with_summary(store)
+    llm = FakeLlm([], error=httpx.ConnectError("refused"))
+    events = await collect_with(session, llm, ToolRunner(store, session), "hmm")
+    assert events[-1].type == "error"
+    assert list(session.summaries) == [summary_id]
