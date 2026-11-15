@@ -1,5 +1,6 @@
 import asyncio
 import json
+from contextlib import aclosing
 
 import httpx
 import pytest
@@ -84,10 +85,11 @@ async def run_and_cancel(session, llm, runner, text, cancel_at):
     reached = asyncio.Event()
 
     async def consume():
-        async for e in run_turn(session, text, llm, runner, "m", 6):
-            events.append(e)
-            if e.type == cancel_at:
-                reached.set()
+        async with aclosing(run_turn(session, text, llm, runner, "m", 6)) as turn:
+            async for e in turn:
+                events.append(e)
+                if e.type == cancel_at:
+                    reached.set()
 
     task = asyncio.create_task(consume())
     await reached.wait()
@@ -147,3 +149,30 @@ async def test_cancel_between_tools_fills_missing_results():
                                     "content": "Not run: the customer interrupted."}
     assert_history_valid(session.messages)
 
+
+
+async def test_second_cancel_during_tool_still_records_the_order():
+    store = FakeStore()
+    store.place_delay_s = 0.1
+    session, summary_id = await customer_with_summary(store)
+    llm = FakeLlm([[("place_order", json.dumps({"summary_id": summary_id}))], "Done."])
+    runner = ToolRunner(store, session)
+    reached = asyncio.Event()
+
+    async def consume():
+        async with aclosing(run_turn(session, "yes", llm, runner, "m", 6)) as turn:
+            async for e in turn:
+                if e.type == "tool_start":
+                    reached.set()
+
+    task = asyncio.create_task(consume())
+    await reached.wait()
+    task.cancel()
+    await asyncio.sleep(0.02)
+    task.cancel()
+    with pytest.raises(asyncio.CancelledError):
+        await task
+    assert len(store.placed) == 1
+    last = session.messages[-1]
+    assert last["role"] == "tool" and json.loads(last["content"])["order"]["display_id"] == 10
+    assert_history_valid(session.messages)

@@ -15,7 +15,7 @@ import openai
 from support_agent.instructions import build_instructions
 from support_agent.llm import LlmClient
 from support_agent.session import Session
-from support_agent.tools import TOOL_SPECS, ToolRunner
+from support_agent.tools import TOOL_SPECS, ToolResult, ToolRunner
 
 EventType = Literal[
     "turn_start", "llm_start", "first_token", "text", "tool_call_start", "llm_end",
@@ -55,6 +55,16 @@ def _add_tool_message(session: Session, call_id: str, content: str) -> None:
     session.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
 
 
+async def _wait_through_cancels(tool: asyncio.Future) -> ToolResult:
+    """Waits until the tool task is done. Each further cancel during the wait has no effect."""
+    while not tool.done():
+        try:
+            await asyncio.shield(tool)
+        except asyncio.CancelledError:
+            pass
+    return tool.result()
+
+
 async def run_turn(
     session: Session,
     user_text: str,
@@ -63,15 +73,24 @@ async def run_turn(
     model: str,
     max_tool_rounds: int,
 ) -> AsyncIterator[AgentEvent]:
+    """Streams one customer turn and yields timed events.
+
+    Cancel safety: a cancel (asyncio.CancelledError) can stop the turn at any await.
+    After a cancel, session.messages stays valid for the next turn:
+
+    - A cancel during a model stream drops the partial text of that round.
+    - A cancel during a tool waits for that tool and records its real result.
+      Further cancels during this wait have no effect.
+    - Each tool call that did not run gets the tool message NOT_RUN_MESSAGE.
+
+    Callers must close the generator with contextlib.aclosing(run_turn(...)).
+    Then the finally block runs at once after a cancel, and not later at garbage collection.
+    """
     start = time.perf_counter()
 
     def event(kind: EventType, **data) -> AgentEvent:
         return AgentEvent(kind, (time.perf_counter() - start) * 1000, data)
 
-    # Cancel safety: a cancel (asyncio.CancelledError) can stop the turn at any await.
-    # The turn then keeps session.messages valid for the next turn:
-    # a cancel during a model stream drops the partial text of that round, and
-    # every assistant tool call gets one tool message.
     session.customer_turns += 1
     session.messages.append({"role": "user", "content": user_text})
     yield event("turn_start", model=model, channel=session.channel)
@@ -161,7 +180,7 @@ async def run_turn(
                 try:
                     result = await asyncio.shield(tool)
                 except asyncio.CancelledError:
-                    result = await tool
+                    result = await _wait_through_cancels(tool)
                     _add_tool_message(session, call["id"], result.content)
                     answered += 1
                     raise
