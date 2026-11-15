@@ -32,6 +32,8 @@ class Settings(BaseSettings):
     voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
     voice_tts_voice: str = "af_heart"
     voice_asterisk_path: str = "/api/voice/asterisk"
+    # Host names that the server accepts in the Host header. Other names get 400.
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1"]
 
 
 @lru_cache

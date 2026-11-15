@@ -14,10 +14,7 @@ The pipeline order, from the voice design ("Pipeline"):
 """
 
 import asyncio
-from dataclasses import dataclass, field
-from pathlib import Path
 
-import numpy as np
 from loguru import logger
 from pipecat.audio.turn.smart_turn.local_smart_turn_v3 import LocalSmartTurnAnalyzerV3
 from pipecat.audio.vad.silero import SileroVADAnalyzer
@@ -33,7 +30,7 @@ from pipecat.pipeline.pipeline import Pipeline
 from pipecat.pipeline.worker import PipelineParams, PipelineWorker
 from pipecat.processors.audio.vad_processor import VADProcessor
 from pipecat.processors.frame_processor import FrameDirection, FrameProcessor
-from pipecat.services.kokoro.tts import KOKORO_CACHE_DIR, KokoroTTSService, _ensure_model_files
+from pipecat.services.kokoro.tts import KokoroTTSService
 from pipecat.services.tts_service import TTSService
 from pipecat.services.whisper.stt import WhisperSTTServiceMLX
 from pipecat.transcriptions.language import Language
@@ -44,20 +41,16 @@ from pipecat.turns.user_turn_processor import UserTurnProcessor
 from pipecat.turns.user_turn_strategies import UserTurnStrategies
 from pipecat.utils.time import time_now_iso8601
 
-from support_agent.config import Settings
-from support_agent.llm import LlmClient
 from support_agent.session import Session
 from support_agent.tools import ToolRunner
 from support_agent.voice.agent_processor import AgentProcessor, EventCallback, SpokenTextTracker
 from support_agent.voice.debug_hub import DebugHub
+from support_agent.voice.deps import VoiceDeps
 from support_agent.voice.timing import TurnTimer
 
 # If the last speech segment of a turn gives no text in this time after the turn end,
 # the gate sends the text that it has.
 SEGMENT_TIMEOUT_S = 3.0
-
-KOKORO_MODEL = KOKORO_CACHE_DIR / "kokoro-v1.0.onnx"
-KOKORO_VOICES = KOKORO_CACHE_DIR / "voices-v1.0.bin"
 
 
 class TurnTextGate(FrameProcessor):
@@ -168,48 +161,6 @@ class SharedKokoroTTSService(KokoroTTSService):
         self._kokoro = kokoro
         if voice not in kokoro.voices:
             raise ValueError(f"Kokoro TTS voice '{voice}' is not in the voices file")
-
-
-class VoiceModels:
-    """Loads the Whisper and Kokoro models at the first call and keeps them loaded."""
-
-    def __init__(self, settings: Settings):
-        self._settings = settings
-        self._lock = asyncio.Lock()
-        self.kokoro = None
-
-    @property
-    def loaded(self) -> bool:
-        return self.kokoro is not None
-
-    async def ensure_loaded(self) -> None:
-        async with self._lock:
-            if not self.loaded:
-                await asyncio.to_thread(self._load)
-
-    def _load(self) -> None:
-        import mlx_whisper
-        from kokoro_onnx import Kokoro
-
-        logger.info("Loading the voice models. The first download can take a few minutes.")
-        _ensure_model_files(Path(KOKORO_MODEL), Path(KOKORO_VOICES))
-        kokoro = Kokoro(str(KOKORO_MODEL), str(KOKORO_VOICES))
-        # mlx_whisper keeps the last model in memory. One short transcription loads it.
-        mlx_whisper.transcribe(np.zeros(16000, dtype=np.float32),
-                               path_or_hf_repo=self._settings.voice_stt_model, language="en")
-        self.kokoro = kokoro
-        logger.info("The voice models are loaded.")
-
-
-@dataclass
-class VoiceDeps:
-    settings: Settings
-    store: object
-    llm: LlmClient
-    models: VoiceModels = field(init=False)
-
-    def __post_init__(self):
-        self.models = VoiceModels(self.settings)
 
 
 def build_task(transport: BaseTransport, session: Session, deps: VoiceDeps, hub: DebugHub,

@@ -13,6 +13,7 @@ def test_defaults():
     assert s.voice_stt_model == "mlx-community/whisper-large-v3-turbo"
     assert s.voice_tts_voice == "af_heart"
     assert s.voice_asterisk_path == "/api/voice/asterisk"
+    assert s.allowed_hosts == ["localhost", "127.0.0.1"]
     assert "demo-store/docker-compose.yml" in s.store_key_file_command
 
 

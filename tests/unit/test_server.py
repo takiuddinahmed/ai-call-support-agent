@@ -10,7 +10,7 @@ from tests.unit.fakes import FakeLlm, FakeModels, FakeStore
 def make_client(rounds=("Hello",)):
     llm = FakeLlm(list(rounds))
     app = create_app(Settings(_env_file=None), store=FakeStore(), llm=llm, models=FakeModels())
-    return TestClient(app), llm
+    return TestClient(app, base_url="http://localhost"), llm
 
 
 def new_session(client, channel="chat"):

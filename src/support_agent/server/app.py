@@ -6,6 +6,7 @@ from typing import Literal
 
 import uvicorn
 from fastapi import FastAPI, HTTPException
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -16,7 +17,7 @@ from support_agent.session import Identity, Session
 from support_agent.store.client import StoreAuthError, StoreClient
 from support_agent.tools import ToolRunner
 from support_agent.voice.debug_hub import DebugHub
-from support_agent.voice.pipeline import VoiceDeps
+from support_agent.voice.deps import VoiceDeps
 from support_agent.voice.routes import voice_router
 
 STATIC = Path(__file__).parent / "static"
@@ -50,8 +51,12 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
     models = models or llm
     sessions: dict[str, Session] = {}
     app = FastAPI(title="Support agent")
+    # A Host header check stops DNS rebinding: a hostile web page cannot reach this local
+    # server under its own domain name.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
     hub = DebugHub()
     app.state.voice_hub = hub
+    app.state.sessions = sessions
     # The voice routes share the sessions, so that login and logout work for the voice page.
     app.include_router(voice_router(VoiceDeps(settings, store, llm), sessions, hub))
 

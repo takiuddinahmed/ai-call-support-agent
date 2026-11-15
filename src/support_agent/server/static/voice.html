@@ -120,6 +120,8 @@ async function startCall() {
   $("start").disabled = true;
   status("Starting the call. The first call loads the voice models. This can take a few minutes.");
   try {
+    // Each call starts a fresh conversation. The login stays.
+    await api("/api/voice/new-call", { session_id: sessionId });
     mic = await navigator.mediaDevices.getUserMedia({
       audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
     });
