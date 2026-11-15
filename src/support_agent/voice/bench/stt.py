@@ -17,7 +17,7 @@ from support_agent.voice.bench.make_audio import (
     load_sentences,
     resample,
 )
-from support_agent.voice.bench.wer import word_error_rate
+from support_agent.voice.bench.wer import normalize_for_wer, word_error_rate
 
 WHISPER_RATE = 16000
 REPORTS_DIR = Path("reports")
@@ -35,7 +35,9 @@ def percentile(values: list[float], fraction: float) -> float:
 def load_clip(path: Path) -> np.ndarray:
     """Reads a WAV file and resamples it to the 16 kHz that Whisper needs.
 
-    The phone pipeline does the same for 8 kHz audio.
+    An 8 kHz clip is a G.711 fallback test. The 8 kHz clip is a band-limit only (the
+    resampler removes the high band) and has no G.711 codec noise. The main phone path
+    is 16 kHz audio from Asterisk (slin16, G.722 phones), which needs no resampling.
     """
     audio, rate = sf.read(path, dtype="float32")
     return resample(audio, rate, WHISPER_RATE)
@@ -63,7 +65,9 @@ def run_stt(model: str, rate: int, audio_dir: Path = AUDIO_DIR) -> dict:
                 "voice": voice,
                 "reference": sentence["text"],
                 "heard": heard,
-                "wer": word_error_rate(sentence["text"], heard),
+                "wer": word_error_rate(normalize_for_wer(sentence["text"]),
+                                       normalize_for_wer(heard)),
+                "raw_wer": word_error_rate(sentence["text"], heard),
                 "seconds": seconds,
             })
     return {"model": model, "rate": rate, "rows": rows}
@@ -74,29 +78,46 @@ def render_report(result: dict, day: str) -> str:
     by_group = defaultdict(list)
     by_voice = defaultdict(list)
     for row in rows:
-        by_group[row["group"]].append(row["wer"])
-        by_voice[row["voice"]].append(row["wer"])
+        by_group[row["group"]].append(row)
+        by_voice[row["voice"]].append(row)
+
+    def mean(items: list[dict], key: str) -> float:
+        return statistics.mean(item[key] for item in items)
+
+    rate_label = (f"{result['rate']} Hz"
+                  if result["rate"] == 16000
+                  else "8000 Hz (G.711 fallback, band-limit only, no codec noise)")
     times = [row["seconds"] for row in rows]
     lines = [
-        f"# Speech-to-text benchmark: {result['model']} at {result['rate']} Hz",
+        f"# Speech-to-text benchmark: {result['model']} at {rate_label}",
         "",
         f"Date: {day}. Clips: {len(rows)}. Language: English.",
         "",
         "## Word error rate",
         "",
-        f"The mean word error rate is {statistics.mean(r['wer'] for r in rows):.3f}.",
+        "The main number is the normalized word error rate. The normalization makes the",
+        "format of numbers and codes the same on both sides (for example ESP32 and ESP 32).",
+        "The raw rate counts those format differences as errors.",
         "",
-        "| Sentence group | Mean word error rate | Clips |",
-        "|---|---|---|",
+        (f"The mean normalized word error rate is {mean(rows, 'wer'):.3f}. "
+         f"The mean raw word error rate is {mean(rows, 'raw_wer'):.3f}."),
+        "",
+        "| Sentence group | Normalized | Raw | Clips |",
+        "|---|---|---|---|",
     ]
-    lines += [f"| {g} | {statistics.mean(v):.3f} | {len(v)} |" for g, v in by_group.items()]
-    lines += ["", "| Voice | Mean word error rate | Clips |", "|---|---|---|"]
-    lines += [f"| {g} | {statistics.mean(v):.3f} | {len(v)} |" for g, v in by_voice.items()]
+    lines += [f"| {g} | {mean(v, 'wer'):.3f} | {mean(v, 'raw_wer'):.3f} | {len(v)} |"
+              for g, v in by_group.items()]
+    lines += ["", "| Voice | Normalized | Raw | Clips |", "|---|---|---|---|"]
+    lines += [f"| {g} | {mean(v, 'wer'):.3f} | {mean(v, 'raw_wer'):.3f} | {len(v)} |"
+              for g, v in by_voice.items()]
     lines += [
         "",
         "## Time",
         "",
         "Each Whisper call ran alone, after the model loaded and one warm-up call.",
+        "The times are Whisper time only. They do not include audio capture, voice activity",
+        "detection, or speech synthesis. Ollama had a model loaded during the timing, so",
+        "the times can have a small error.",
         "",
         f"- Median time: {statistics.median(times):.3f} s",
         f"- p90 time: {percentile(times, 0.9):.3f} s",
@@ -112,6 +133,12 @@ def render_report(result: dict, day: str) -> str:
     lines += [
         "",
         "## Note",
+        "",
+        f"Differences of about 0.01 in word error rate are inside the noise of {len(rows)}",
+        "clips. Do not rank models on a difference that small.",
+        "",
+        "The 8 kHz clips are a G.711 fallback test. They are band-limited only and have no",
+        "G.711 codec noise. The main phone path is 16 kHz.",
         "",
         "Synthetic voices give lower error rates than real callers. Real callers have noise,",
         "accents, and a poor phone line. Use these numbers to compare models, not to predict",

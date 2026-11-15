@@ -2851,10 +2851,13 @@ source = { editable = "." }
 dependencies = [
     { name = "fastapi" },
     { name = "httpx" },
+    { name = "numpy" },
     { name = "openai" },
     { name = "pipecat-ai", extra = ["kokoro", "local-smart-turn", "mlx-whisper", "webrtc", "websocket", "whisper"] },
     { name = "pydantic-settings" },
     { name = "pyyaml" },
+    { name = "scipy" },
+    { name = "soundfile" },
     { name = "uvicorn", extra = ["standard"] },
 ]
 
@@ -2869,10 +2872,13 @@ dev = [
 requires-dist = [
     { name = "fastapi", specifier = ">=0.163.0" },
     { name = "httpx", specifier = ">=0.28.1" },
+    { name = "numpy", specifier = ">=2.5.4" },
     { name = "openai", specifier = ">=3.51.0" },
     { name = "pipecat-ai", extras = ["kokoro", "local-smart-turn", "mlx-whisper", "silero", "webrtc", "websocket", "whisper"], specifier = "==1.16.0" },
     { name = "pydantic-settings", specifier = ">=2.16.3" },
     { name = "pyyaml", specifier = ">=6.0.3" },
+    { name = "scipy", specifier = ">=1.18.1" },
+    { name = "soundfile", specifier = ">=0.13.1" },
     { name = "uvicorn", extras = ["standard"], specifier = ">=0.54.0" },
 ]
 

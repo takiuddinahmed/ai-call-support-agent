@@ -10,6 +10,8 @@ import yaml
 from scipy.signal import resample_poly
 
 AUDIO_DIR = Path("bench-audio")
+# 16 kHz is the main phone path (Asterisk slin16). 8 kHz is a G.711 fallback test that
+# has a band-limit only and no codec noise.
 RATES = (16000, 8000)
 KOKORO_VOICES = ("af_heart", "am_adam")
 SAY_VOICES = ("Samantha", "Daniel")

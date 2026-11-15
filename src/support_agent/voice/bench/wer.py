@@ -24,3 +24,18 @@ def word_error_rate(reference: str, heard: str) -> float:
             current.append(min(previous[j] + 1, current[j - 1] + 1, previous[j - 1] + cost))
         previous = current
     return previous[-1] / len(ref)
+
+
+def normalize_for_wer(text: str) -> str:
+    """Makes the format of numbers and codes the same on both sides of a comparison.
+
+    The function lowercases the text, turns hyphens into spaces, and removes other
+    punctuation. It removes the spaces between digit groups. It joins a letter group of
+    up to three letters to the digit group after it. So "ESP 32" and "ESP32" match,
+    "BD 778 4521" and "BD778-4521" match, and "01811 556677" and "01811-556677" match.
+    """
+    text = text.lower().replace("-", " ")
+    text = re.sub(r"[^\w\s]", "", text)
+    text = re.sub(r"\s+", " ", text).strip()
+    text = re.sub(r"(?<=\d) (?=\d)", "", text)
+    return re.sub(r"\b([a-z]{1,3}) (?=\d)", r"\1", text)
