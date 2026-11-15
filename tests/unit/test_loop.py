@@ -37,12 +37,15 @@ async def test_tool_round_then_answer():
     assert second_call[0]["role"] == "system"
 
 
-async def test_too_many_tool_rounds():
+async def test_round_limit_forces_a_final_answer_without_tools():
     session = Session.new(Identity.guest())
-    llm = FakeLlm([[("get_product", '{"handle": "x"}')]] * 7)
+    llm = FakeLlm([[("get_product", '{"handle": "x"}')]] * 6 + ["Here is what I found"])
     events = await collect(session, llm, max_rounds=6)
-    assert events[-1].type == "error"
-    assert "too many tool calls" in events[-1].data["message"]
+    assert events[-1].type == "answer"
+    assert events[-1].data["text"].strip() == "Here is what I found"
+    assert len([e for e in events if e.type == "tool_start"]) == 6
+    assert llm.tools_seen[-1] == []
+    assert "Answer now" in llm.seen[-1][-1]["content"]
 
 
 async def test_model_server_down_gives_one_error():

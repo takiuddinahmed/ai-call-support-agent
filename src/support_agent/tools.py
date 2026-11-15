@@ -204,10 +204,28 @@ class ToolRunner:
         products = filter_products(
             await self.store.list_products(), text, category, spec_filters, bool(in_stock_only)
         )
-        return {
+        note = None
+        if not products and spec_filters and text:
+            products = filter_products(
+                await self.store.list_products(), text, category, [], bool(in_stock_only)
+            )
+            if products:
+                note = (
+                    "No product matched the filters. These products match the words only. "
+                    "Check their specs before you recommend them."
+                )
+        result = {
             "count": len(products),
             "products": [_product_view(p) for p in products[:MAX_SEARCH_RESULTS]],
         }
+        if note:
+            result["note"] = note
+        if not products:
+            result["hint"] = (
+                "No match. Search again with fewer words and no filters, or one part type "
+                "at a time."
+            )
+        return result
 
     async def _tool_get_product(self, handle: str) -> dict:
         product = await self.store.get_product(handle)

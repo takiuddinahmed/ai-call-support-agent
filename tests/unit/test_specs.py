@@ -57,9 +57,13 @@ def test_variant_specs_count():
     assert handles(filter_products(ALL, None, None, [SpecFilter("ram_mb", "gte", 4096)])) == ["pi5"]
 
 
-def test_text_needs_all_words():
-    assert handles(filter_products(ALL, "distance sensor", None, [])) == ["sr04", "vl53"]
-    assert handles(filter_products(ALL, "ultrasonic distance", None, [])) == ["sr04"]
+def test_text_matches_any_word_ranked_by_matches():
+    assert handles(filter_products(ALL, "distance", None, [])) == ["sr04", "vl53"]
+    # sr04 matches both words, vl53 only one, so sr04 comes first.
+    assert handles(filter_products(ALL, "ultrasonic distance", None, [])) == ["sr04", "vl53"]
+    # No product has both words, but each word finds a product.
+    assert handles(filter_products(ALL, "ESP32 Raspberry", None, [])) == ["esp32", "pi5"]
+    assert filter_products(ALL, "submarine", None, []) == []
 
 
 def test_unknown_key_raises():

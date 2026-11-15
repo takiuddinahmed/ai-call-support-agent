@@ -95,11 +95,14 @@ def _matches_filter(product: Product, f: SpecFilter) -> bool:
     return any(_match(specs.get(f.key), f) for specs in spec_sets)
 
 
-def _matches_text(product: Product, text: str) -> bool:
+def _text_score(product: Product, text: str) -> int:
+    """Counts the words of the text that appear in the product title, description,
+    category, or tags. Models often send several part names in one search, so any word
+    counts, and products with more matching words rank first."""
     haystack = " ".join(
         [product.title, product.description, product.category or "", " ".join(product.tags)]
     ).lower()
-    return all(word in haystack for word in text.lower().split())
+    return sum(1 for word in set(text.lower().split()) if word in haystack)
 
 
 def filter_products(
@@ -112,13 +115,18 @@ def filter_products(
     for f in filters:
         _check(f)
     result = []
+    scores: dict[str, int] = {}
     for product in products:
-        if text and not _matches_text(product, text):
-            continue
+        if text:
+            scores[product.id] = _text_score(product, text)
+            if scores[product.id] == 0:
+                continue
         if category and (product.category or "").lower() != category.strip().lower():
             continue
         if in_stock_only and product.total_stock <= 0:
             continue
         if all(_matches_filter(product, f) for f in filters):
             result.append(product)
+    if text:
+        result.sort(key=lambda p: -scores[p.id])
     return result

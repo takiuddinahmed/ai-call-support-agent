@@ -22,6 +22,12 @@ EventType = Literal[
 ]
 
 
+FINAL_ROUND_NOTE = (
+    "Answer now with the information from the tool results above. Do not call tools. "
+    "If something is missing, say so and ask the customer one short question."
+)
+
+
 @dataclass
 class AgentEvent:
     type: EventType
@@ -59,19 +65,22 @@ async def run_turn(
     yield event("turn_start", model=model, channel=session.channel)
 
     for round_no in range(1, max_tool_rounds + 2):
-        if round_no > max_tool_rounds:
-            yield event("error", message="The agent used too many tool calls. Ask again.")
-            return
-        system = build_instructions(session.channel, session.identity, datetime.now(ZoneInfo("Asia/Dhaka")))
+        # After the last tool round, the model must answer from the results it has.
+        final_round = round_no > max_tool_rounds
+        system = build_instructions(
+            session.channel, session.identity, datetime.now(ZoneInfo("Asia/Dhaka"))
+        )
         messages = [{"role": "system", "content": system}, *session.messages]
-        yield event("llm_start", round=round_no)
+        if final_round:
+            messages.append({"role": "system", "content": FINAL_ROUND_NOTE})
+        yield event("llm_start", round=round_no, final=final_round)
         llm_start = time.perf_counter()
         first_token_ms = None
         text_parts: list[str] = []
         calls: dict[int, dict] = {}
         usage: dict | None = None
         try:
-            async for chunk in llm.stream(model, messages, TOOL_SPECS):
+            async for chunk in llm.stream(model, messages, [] if final_round else TOOL_SPECS):
                 if first_token_ms is None and (chunk.text or chunk.tool_calls):
                     first_token_ms = (time.perf_counter() - llm_start) * 1000
                     yield event("first_token", round=round_no, ms=round(first_token_ms, 1))
@@ -106,7 +115,10 @@ async def run_turn(
         )
 
         text = "".join(text_parts).strip()
-        if not calls:
+        if final_round and not text:
+            yield event("error", message="The agent could not finish the answer. Ask again.")
+            return
+        if not calls or final_round:
             session.messages.append({"role": "assistant", "content": text})
             yield event("answer", text=text, total_ms=round((time.perf_counter() - start) * 1000, 1))
             return

@@ -141,3 +141,16 @@ async def test_prepare_order_rejects_bad_phone():
     ok, message = await run(guest(), FakeStore(), "prepare_order", items=[ITEM],
                             address=bad, email="karim@example.com")
     assert not ok and "mobile number" in message
+
+
+async def test_empty_search_gives_a_retry_hint():
+    ok, data = await run(guest(), FakeStore(), "search_products", text="submarine")
+    assert ok and data["count"] == 0
+    assert "fewer words" in data["hint"]
+
+
+async def test_filters_that_match_nothing_fall_back_to_the_words():
+    ok, data = await run(guest(), FakeStore(), "search_products", text="ESP32",
+                         filters=[{"key": "ram_mb", "op": "gte", "value": 999999}])
+    assert ok and [p["handle"] for p in data["products"]] == ["esp32-devkit-v1"]
+    assert "No product matched the filters" in data["note"]

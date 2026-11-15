@@ -77,11 +77,13 @@ class FakeLlm:
         self.rounds = list(rounds)
         self.error = error
         self.seen: list[list[dict]] = []
+        self.tools_seen: list[list[dict]] = []
 
     async def stream(self, model, messages, tools):
         from support_agent.llm import LlmChunk, ToolCallDelta
 
         self.seen.append(list(messages))
+        self.tools_seen.append(list(tools))
         if self.error:
             raise self.error
         step = self.rounds.pop(0)
