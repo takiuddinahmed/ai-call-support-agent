@@ -2,7 +2,7 @@
 
 This project is a local AI customer support agent for the demo store Robo Parts BD. A customer can find products by need, place a cash-on-delivery order, and get the status of an order. The agent talks in Bangla, English, or a mix of both.
 
-This is the text chat phase. The voice phase will use the same core: the instructions, the store tools, and the store client. All AI runs locally on the Mac. The project uses no cloud AI service.
+The agent has a text chat and English voice calls. A voice call can come from the browser or from a SIP softphone (a phone app that uses an IP network) through Asterisk. Both use the same core: the instructions, the store tools, and the store client. All AI runs locally on the Mac. The project uses no cloud AI service.
 
 ## Requirements
 
@@ -53,6 +53,73 @@ The right side of the page shows each customer turn:
 
 Use the "Model" menu to switch between the models in Ollama. Use the "Channel" menu to switch to the voice style: short answers with no lists and with numbers in words.
 
+## Voice calls
+
+The voice agent speaks English. It listens with Whisper (speech-to-text), thinks with the Ollama model, and speaks with Kokoro (text-to-speech). The server must run on the branch `feat/voice-agent`.
+
+Rules for all voice calls:
+
+- The server takes one call at a time. A second call gets a busy answer.
+- The first call after a server start waits about 50 s for the model load.
+- A phone call is a guest call. The caller cannot log in by phone.
+- The agent asks for a phone number, not an email. A guest order without an email gets an email made from the phone number.
+- Before the agent places an order, it reads back what it heard. The caller must say a clear yes.
+
+### Browser call
+
+1. Start the server with `uv run python -m support_agent`.
+2. Open `http://localhost:8100/voice`.
+3. Log in or choose "Call as guest". Then choose "Start call".
+
+Use headphones. Without them, the agent hears its own voice from the speakers. The page also shows a debug panel with the time of each step of each turn.
+
+### Phone call through Asterisk
+
+Asterisk is in the demo store, on the branch `feat/asterisk` of `../demo-store`. Follow these steps:
+
+1. In `../demo-store/.env`, set `ASTERISK_LAN_IP`, `ASTERISK_PHONE_PASSWORD`, and `AGENT_PHONE_TOKEN`. Get the Mac LAN address with `ipconfig getifaddr en0`.
+2. Set the same `AGENT_PHONE_TOKEN` in the `.env` of this folder. If the two values differ, every phone call fails. If the value is empty, the agent refuses every phone call.
+3. Start Asterisk in `../demo-store`:
+
+   ```sh
+   docker compose up -d asterisk
+   ```
+
+4. Start the agent server on this branch.
+5. Register a softphone with the settings below.
+6. Dial 2000 for the agent. Dial 600 for an echo test of the phone link.
+
+If the Mac LAN address changes, change `ASTERISK_LAN_IP` and run `docker compose up -d asterisk` again.
+
+Softphone settings. These are the same in Linphone (iPhone, on the same Wi-Fi as the Mac) and in Telephone (the Mac app from the Mac App Store):
+
+| Setting | Value |
+| --- | --- |
+| Domain | The Mac LAN address with port 5060, for example `192.168.10.239:5060` |
+| User | `1001` |
+| Password | The value of `ASTERISK_PHONE_PASSWORD` in `../demo-store/.env` |
+| Transport | UDP |
+| Codecs | G.722 first, then G.711 (PCMU and PCMA). Turn off the others. |
+
+In Linphone, choose "Use a SIP account", not the Linphone account. Allow the local network permission on iOS, and keep the app open. To check the registration, run `docker compose exec asterisk asterisk -rx "pjsip show contacts"` in `../demo-store`. Contact 1001 must show `Avail`.
+
+The phone route is `/api/voice/asterisk`. Asterisk sends `AGENT_PHONE_TOKEN` as the HTTP Basic password. The agent hangs up a phone call after `MAX_CALL_SECONDS`.
+
+### Voice benchmark
+
+The voice benchmark has two parts. Each part writes a report in `reports/`.
+
+```sh
+uv run python -m support_agent.voice.bench make-audio                  # test audio in bench-audio/
+uv run python -m support_agent.voice.bench stt --model mlx-community/whisper-small-mlx --rate 16000
+uv run python -m support_agent.voice.bench calls --rate 16000          # full calls, about 10 minutes
+```
+
+- `stt` measures the word error rate and the time of one Whisper model. Use `--rate 8000` for the phone band.
+- `calls` plays scripted caller audio through the full pipeline and measures the pause. Stop the other servers on port 8100 first, because a second call can slow a turn.
+
+The first numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s on turns without tools. The slowest step is the first token of the model.
+
 ## The benchmark
 
 The benchmark runs 26 scripted conversations in English, Bangla, and mixed language. It checks the tool calls and the facts in each answer, and it measures the speed.
@@ -89,6 +156,9 @@ ollama stop <model>
 | `CATALOG_CACHE_SECONDS` | `300` | How long the agent keeps the product list |
 | `AGENT_PHONE_TOKEN` | empty | Shared secret of the Asterisk phone route. Use the same value in `../demo-store/.env`. Empty refuses every phone call. |
 | `MAX_CALL_SECONDS` | `900` | The agent hangs up a phone call after this time |
+| `VOICE_STT_MODEL` | `mlx-community/whisper-small-mlx` | The Whisper model for speech-to-text |
+| `VOICE_TTS_VOICE` | `af_heart` | The Kokoro voice of the agent |
+| `VOICE_ASTERISK_PATH` | `/api/voice/asterisk` | The WebSocket path for phone calls |
 | `ALLOWED_HOSTS` | `["localhost","127.0.0.1","host.docker.internal"]` | Host names that the server accepts |
 
 The debug routes accept only clients on this computer. Docker Desktop shows each container as `127.0.0.1`, so the containers on this Mac are trusted local clients for the debug routes.
@@ -129,6 +199,7 @@ Two findings matter for speed:
 | `src/support_agent/instructions.py` | The system prompt, chat and voice styles |
 | `src/support_agent/loop.py` | One customer turn, with timed events |
 | `src/support_agent/llm.py` | The client for the model server |
-| `src/support_agent/server/` | The chat server and the chat page |
+| `src/support_agent/server/` | The chat server, the chat page, and the voice page |
+| `src/support_agent/voice/` | The voice pipeline, the browser and phone routes, the debug hub, and the voice benchmark |
 | `src/support_agent/bench/` | The benchmark and its cases |
 | `reports/` | Benchmark reports |

@@ -30,7 +30,7 @@ class Settings(BaseSettings):
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
     # Voice channel. The speech benchmark can change the models.
-    voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
+    voice_stt_model: str = "mlx-community/whisper-small-mlx"
     voice_tts_voice: str = "af_heart"
     voice_asterisk_path: str = "/api/voice/asterisk"
     # Shared secret of the phone route (env AGENT_PHONE_TOKEN). Asterisk sends it as the

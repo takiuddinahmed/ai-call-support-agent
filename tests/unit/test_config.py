@@ -10,7 +10,7 @@ def test_defaults():
     assert s.llm_reasoning_effort == "low"
     assert s.max_tool_rounds == 6
     assert s.catalog_cache_seconds == 300
-    assert s.voice_stt_model == "mlx-community/whisper-large-v3-turbo"
+    assert s.voice_stt_model == "mlx-community/whisper-small-mlx"
     assert s.voice_tts_voice == "af_heart"
     assert s.voice_asterisk_path == "/api/voice/asterisk"
     assert s.allowed_hosts == ["localhost", "127.0.0.1", "host.docker.internal"]
