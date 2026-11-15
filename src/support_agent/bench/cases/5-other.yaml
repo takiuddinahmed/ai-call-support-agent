@@ -1,0 +1,20 @@
+# Unsupported requests and the voice style (2 cases)
+- id: refuse-en-cancel
+  language: en
+  login: rahim
+  channel: chat
+  turns:
+    - user: Please cancel my order 1.
+      expect:
+        answer_contains_any: [cannot, "can't", "not able", unable, store team, contact]
+        tools_not_called: [place_order, prepare_order]
+- id: voice-en-style
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Which sensors can measure distance?
+      expect:
+        tools_called: [search_products]
+        no_list_lines: true
+        answer_not_contains: ["**", "|"]

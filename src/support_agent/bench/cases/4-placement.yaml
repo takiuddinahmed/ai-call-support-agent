@@ -1,0 +1,59 @@
+# Order placement (4 cases). Guest orders use a benchmark email.
+- id: place-en-guest-yes
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: >-
+        I want to order 1 breadboard 830. Deliver to Karim Ali, House 5 Road 2, Sylhet,
+        postal code 3100, phone 01811111111, email {bench_email}.
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+        answer_contains_any: ["270"]
+    - user: Yes, please place the order.
+      expect:
+        order_placed: true
+- id: place-bn-guest-yes
+  language: bn
+  login: none
+  channel: chat
+  turns:
+    - user: >-
+        আমি একটা Jumper Wire Set অর্ডার করতে চাই। নাম রহিম মিয়া, বাসা ৩, রোড ৪, ঢাকা,
+        পোস্ট কোড ১২০৫, ফোন 01922222222, ইমেইল {bench_email}
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+    - user: হ্যাঁ, অর্ডার করে দিন
+      expect:
+        order_placed: true
+- id: place-en-guest-no
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: >-
+        Order 2 SG90 servos to Nadia Islam, Flat 2A, Road 7, Dhaka, postal code 1207,
+        phone 01633333333, email {bench_email}.
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+    - user: No, wait. I do not want it now.
+      expect:
+        order_placed: false
+- id: place-en-guest-change-city
+  language: en
+  login: none
+  channel: chat
+  turns:
+    - user: >-
+        I want 1 DHT11 sensor. Send to Tania Akter, Road 1, Dhaka, postal code 1212,
+        phone 01544444444, email {bench_email}.
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+    - user: Actually send it to my Chattogram address, GEC Circle, postal code 4000.
+      expect:
+        order_placed: false
+        answer_contains_any: ["outside dhaka", "150"]

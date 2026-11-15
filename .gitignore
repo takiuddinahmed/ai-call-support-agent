@@ -8,3 +8,6 @@ wheels/
 
 # Virtual environments
 .venv
+.superpowers/
+.env
+reports/*.json
