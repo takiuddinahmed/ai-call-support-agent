@@ -28,6 +28,10 @@ class Settings(BaseSettings):
     llm_reasoning_effort: str = "low"
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
+    # Voice channel. The speech benchmark can change the models.
+    voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
+    voice_tts_voice: str = "af_heart"
+    voice_asterisk_path: str = "/api/voice/asterisk"
 
 
 @lru_cache
