@@ -18,7 +18,8 @@ class Settings(BaseSettings):
         "cat /shared/publishable_key"
     )
     llm_base_url: str = "http://localhost:11434/v1"
-    llm_model: str = "qwen3.5:4b"
+    # Chosen in reports/2026-11-15-model-comparison.md.
+    llm_model: str = "qwen3.5:4b-q4_K_M"
     llm_api_key: str = "ollama"
     # Hidden thinking of the model: none, low, medium, or high. Empty sends nothing.
     # Measured with qwen3.5:4b: the model default thinks for about 18 s; "none" answers in

@@ -63,7 +63,7 @@ def test_channel_in_chat_request_changes_session():
 def test_models_list():
     client, _ = make_client()
     data = client.get("/api/models").json()
-    assert data == {"models": ["qwen3.5:4b", "other:7b"], "default": "qwen3.5:4b"}
+    assert data == {"models": ["qwen3.5:4b", "other:7b"], "default": "qwen3.5:4b-q4_K_M"}
 
 
 def test_logout_returns_to_guest():
