@@ -1,7 +1,8 @@
-"""HTTP routes of the browser voice call: the page, the WebRTC offer, and the debug events.
+"""Routes of the voice calls: the browser page, the WebRTC offer, the Asterisk phone
+WebSocket, and the debug events.
 
 The server imports this module at start. So this module imports Pipecat and the voice
-pipeline only inside the offer handler, at the first call.
+pipeline only inside the call handlers, at the first call.
 """
 
 import asyncio
@@ -10,12 +11,12 @@ from collections.abc import Awaitable, Callable
 from contextlib import aclosing
 from pathlib import Path
 
-from fastapi import APIRouter, HTTPException, Request
+from fastapi import APIRouter, HTTPException, Request, WebSocket, WebSocketDisconnect
 from fastapi.responses import FileResponse, StreamingResponse
 from loguru import logger
 from pydantic import BaseModel
 
-from support_agent.session import Session
+from support_agent.session import Identity, Session
 from support_agent.voice.debug_hub import DebugHub
 from support_agent.voice.deps import VoiceDeps
 
@@ -26,6 +27,15 @@ BROWSER_AUDIO_RATE = 16000
 CONNECT_TIMEOUT_S = 15.0
 # The debug routes show transcripts and order details. Only this computer can read them.
 LOCAL_CLIENTS = {"127.0.0.1", "::1"}
+# Asterisk sends MEDIA_START right after the connection opens.
+MEDIA_START_TIMEOUT_S = 5.0
+# WebSocket close codes (RFC 6455).
+CLOSE_POLICY = 1008
+CLOSE_UNSUPPORTED = 1003
+CLOSE_TRY_AGAIN = 1013
+
+# slin16: 16000 samples of 2 bytes in one second, so 320 bytes in 10 ms.
+SLIN16_10MS_BYTES = 320
 
 CancelCall = Callable[[str], Awaitable[None]]
 
@@ -46,6 +56,15 @@ def caller_name(session: Session) -> str:
     if session.identity.kind == "customer" and customer is not None:
         return customer.first_name
     return "guest"
+
+
+def phone_frame_size(optimal_frame_size: int) -> int:
+    """The size of one agent audio frame to Asterisk: a whole number of 10 ms parts.
+
+    If MEDIA_START gives no usable size, the size is 640 bytes (20 ms of slin16).
+    """
+    parts = optimal_frame_size // SLIN16_10MS_BYTES
+    return parts * SLIN16_10MS_BYTES if parts > 0 else 2 * SLIN16_10MS_BYTES
 
 
 def require_local_client(request: Request) -> None:
@@ -105,7 +124,9 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
         from pipecat.workers.runner import WorkerRunner
 
         try:
-            await WorkerRunner(handle_sigint=False).run(worker)
+            runner = WorkerRunner(handle_sigint=False)
+            await runner.add_workers(worker)
+            await runner.run()
         except Exception:  # noqa: BLE001  a failed call must not stop the server
             logger.exception(f"The voice call {call_id} failed")
         finally:
@@ -194,6 +215,114 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                 await connection_seen.disconnect()
             raise HTTPException(500, "The call did not start. Read the server log.")
         return answer
+
+    async def read_media_start(websocket: WebSocket):
+        """Waits for MEDIA_START. Returns None and closes the connection if it is not valid."""
+        from support_agent.voice.asterisk import SLIN16, parse_control, parse_media_start
+
+        async def receive() -> dict:
+            return await asyncio.wait_for(websocket.receive(), MEDIA_START_TIMEOUT_S)
+
+        while True:
+            try:
+                message = await receive()
+            except TimeoutError:
+                logger.warning("Asterisk sent no MEDIA_START. The phone call ends.")
+                await websocket.send_text("HANGUP")
+                await websocket.close()
+                return None
+            if message["type"] == "websocket.disconnect":
+                return None
+            text = message.get("text")
+            if text is None:
+                continue
+            if parse_control(text)[0] == "HANGUP":
+                await websocket.close()
+                return None
+            start = parse_media_start(text)
+            if start is None:
+                continue
+            if start.format != SLIN16:
+                logger.warning(f"The phone call uses the format {start.format!r}, not "
+                               f"{SLIN16}. Use the dial option c(slin16). The call ends.")
+                await websocket.send_text("HANGUP")
+                await websocket.close(code=CLOSE_UNSUPPORTED)
+                return None
+            return start
+
+    @router.websocket(deps.settings.voice_asterisk_path)
+    async def asterisk_call(websocket: WebSocket):
+        """One phone call from Asterisk chan_websocket. The caller is a guest."""
+        nonlocal busy
+        # Asterisk sends no Origin header. A web browser always sends one. So a web page
+        # cannot start a phone call on this local server.
+        if websocket.headers.get("origin"):
+            await websocket.close(code=CLOSE_POLICY)
+            return
+        # Before the accept, uvicorn answers HTTP 403. Then the Asterisk Dial fails, and
+        # the dialplan plays the busy tone.
+        if call_is_active():
+            await websocket.close(code=CLOSE_TRY_AGAIN)
+            return
+        busy = True
+        call_id = None
+        try:
+            await websocket.accept()
+            start = await read_media_start(websocket)
+            if start is None:
+                return
+            await deps.models.ensure_loaded()
+            from pipecat.transports.websocket.fastapi import (
+                FastAPIWebsocketParams,
+                FastAPIWebsocketTransport,
+            )
+            from pipecat.workers.runner import WorkerRunner
+
+            from support_agent.voice.asterisk import (
+                SLIN16_RATE,
+                AsteriskFrameSerializer,
+                caller_from,
+            )
+            from support_agent.voice.pipeline import build_task
+
+            frame_size = phone_frame_size(start.optimal_frame_size)
+            transport = FastAPIWebsocketTransport(
+                websocket,
+                FastAPIWebsocketParams(
+                    audio_in_enabled=True,
+                    audio_out_enabled=True,
+                    serializer=AsteriskFrameSerializer(),
+                    # The output transport sends one frame of frame_size bytes and then
+                    # waits for its play time. So the Asterisk queue stays short, and
+                    # FLUSH_MEDIA stops the agent audio at once.
+                    audio_out_10ms_chunks=frame_size // SLIN16_10MS_BYTES,
+                    fixed_audio_packet_size=frame_size,
+                    # The Origin check is above.
+                    allowed_origins=[],
+                ),
+            )
+            session = Session.new(Identity.guest(), "voice")
+            call_id = hub.start_call("phone",
+                                     caller_from(start, websocket.query_params.get("caller")))
+            logger.info(f"Phone call {call_id} started on {start.channel}")
+            task = build_task(transport, session, deps, hub, call_id, SLIN16_RATE)
+
+            @transport.event_handler("on_client_disconnected")
+            async def on_client_disconnected(_transport, _websocket):
+                await task.cancel(reason="Asterisk closed the phone call.")
+
+            runner = WorkerRunner(handle_sigint=False)
+            await runner.add_workers(task)
+            await runner.run()
+        except WebSocketDisconnect:
+            logger.info("Asterisk closed the connection before the call started.")
+        except Exception:  # noqa: BLE001  a failed call must not stop the server
+            logger.exception("The phone call failed")
+        finally:
+            if call_id is not None:
+                hub.end_call(call_id)
+                logger.info(f"Phone call {call_id} ended")
+            busy = False
 
     @router.get("/api/voice/events")
     async def events(request: Request):

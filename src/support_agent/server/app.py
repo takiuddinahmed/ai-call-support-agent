@@ -5,7 +5,7 @@ from pathlib import Path
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
 from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
@@ -22,6 +22,9 @@ from support_agent.voice.routes import voice_router
 
 STATIC = Path(__file__).parent / "static"
 PORT = 8100
+# Asterisk in Docker connects with this host name. Docker Desktop forwards the connection
+# as client 127.0.0.1, so the local-client check of the debug routes cannot see it.
+DOCKER_HOST_NAME = "host.docker.internal"
 
 
 class SessionIn(BaseModel):
@@ -54,6 +57,16 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
     # A Host header check stops DNS rebinding: a hostile web page cannot reach this local
     # server under its own domain name.
     app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+    @app.middleware("http")
+    async def docker_host_gets_only_the_phone_route(request: Request, call_next):
+        # A container uses the Docker host name. It can open only the phone WebSocket,
+        # which is not an HTTP request. So it gets no page, no chat, and no debug data.
+        if request.url.hostname == DOCKER_HOST_NAME:
+            return JSONResponse({"detail": "This host name is only for the phone route."},
+                                403)
+        return await call_next(request)
+
     hub = DebugHub()
     app.state.voice_hub = hub
     app.state.sessions = sessions

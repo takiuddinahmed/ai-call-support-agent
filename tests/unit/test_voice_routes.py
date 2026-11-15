@@ -72,9 +72,9 @@ def test_unknown_host_is_refused(app):
 
 
 def test_allowed_hosts_come_from_the_settings():
-    settings = Settings(_env_file=None, allowed_hosts=["localhost", "host.docker.internal"])
+    settings = Settings(_env_file=None, allowed_hosts=["localhost", "agent.local"])
     app = create_app(settings, store=FakeStore(), llm=FakeLlm([]), models=FakeModels())
-    client = TestClient(app, base_url="http://host.docker.internal", client=LOCAL)
+    client = TestClient(app, base_url="http://agent.local", client=LOCAL)
     assert client.get("/voice").status_code == 200
 
 
