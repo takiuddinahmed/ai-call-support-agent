@@ -1,4 +1,4 @@
-"""Command line: `python -m support_agent.voice.bench make-audio | stt | calls`."""
+"""Command line: `python -m support_agent.voice.bench make-audio | stt | calls | report`."""
 
 import argparse
 import sys
@@ -13,6 +13,8 @@ def main(argv: list[str] | None = None) -> int:
     stt.add_argument("--rate", type=int, choices=(16000, 8000), default=16000)
     calls = sub.add_parser("calls", help="run the scripted calls through the full pipeline")
     calls.add_argument("--rate", type=int, choices=(16000, 8000), default=16000)
+    report = sub.add_parser("report", help="write a calls report again from its raw JSON")
+    report.add_argument("json", help="the raw result JSON next to a calls report")
     args = parser.parse_args(argv)
 
     if args.command == "make-audio":
@@ -23,6 +25,10 @@ def main(argv: list[str] | None = None) -> int:
         from support_agent.voice.bench.stt import run_stt, write_report
 
         print(f"Report: {write_report(run_stt(args.model, args.rate))}")
+    elif args.command == "report":
+        from support_agent.voice.bench.pipeline_bench import rebuild_report
+
+        print(f"Report: {rebuild_report(args.json)}")
     else:
         import asyncio
 

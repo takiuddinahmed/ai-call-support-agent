@@ -60,6 +60,23 @@ def normalize_answer(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", "", text)
 
 
+def contains_term(text: str, term: str) -> bool:
+    """True if the normalized text has the term.
+
+    A term that starts or ends with a digit must not touch another digit at that side.
+    So "270" does not match "2700" or "1270". Other terms match as a part of a word, so
+    that a Bangla word stem still matches.
+    """
+    if not term:
+        return True
+    pattern = re.escape(term)
+    if term[0].isdigit():
+        pattern = r"(?<!\d)" + pattern
+    if term[-1].isdigit():
+        pattern += r"(?!\d)"
+    return re.search(pattern, text) is not None
+
+
 def _expand(value: str, live: dict[str, int]) -> str:
     return LIVE_PRICE.sub(lambda m: str(live.get(m.group(1), "?")), value)
 
@@ -77,10 +94,13 @@ def check_turn(expect: dict, events: list[AgentEvent], live: dict[str, int]) -> 
         if name in called:
             failures.append(f"tool called but must not be: {name}")
     wanted = [normalize_answer(_expand(w, live)) for w in expect.get("answer_contains_any", [])]
-    if wanted and not any(w in text for w in wanted):
+    if wanted and not any(contains_term(text, w) for w in wanted):
         failures.append(f"answer has none of: {wanted}")
+    for need in expect.get("answer_contains_all", []):
+        if not contains_term(text, normalize_answer(_expand(need, live))):
+            failures.append(f"answer does not have: {need}")
     for bad in expect.get("answer_not_contains", []):
-        if normalize_answer(_expand(bad, live)) in text:
+        if contains_term(text, normalize_answer(_expand(bad, live))):
             failures.append(f"answer contains: {bad}")
     if "order_placed" in expect:
         placed = any(e.type == "tool_end" and e.data["name"] == "place_order" and e.data["ok"]

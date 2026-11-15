@@ -114,6 +114,8 @@ class FileAudioTransport(BaseTransport):
         self._turn_done = turn_done
         self.records: list[TurnRecord] = []
         self._turn_ended = asyncio.Event()
+        self._bot_speaking = False
+        self._end_when_silent = False
         self._params = TransportParams(
             audio_in_enabled=True,
             audio_out_enabled=True,
@@ -141,18 +143,31 @@ class FileAudioTransport(BaseTransport):
         record = TurnRecord(index=len(self.records))
         self.records.append(record)
         self._turn_ended.clear()
+        self._end_when_silent = False
         return record
 
+    def end_turn_when_silent(self) -> None:
+        """Ends the turn now if no agent audio plays, or at the next stop if audio plays.
+
+        Use it when the agent will give no more audio in this turn, for example after an
+        empty answer or an error. Such a turn gives no stop frame after the answer.
+        """
+        self._end_when_silent = True
+        if not self._bot_speaking:
+            self._turn_ended.set()
+
     def on_bot_started(self) -> None:
+        self._bot_speaking = True
         if self.current is not None:
             self.current.bot_started.append(time.monotonic())
 
     def on_bot_stopped(self) -> None:
+        self._bot_speaking = False
         record = self.current
         if record is None:
             return
         record.bot_stopped.append(time.monotonic())
-        if self._turn_done is None or self._turn_done(record):
+        if self._end_when_silent or self._turn_done is None or self._turn_done(record):
             self._turn_ended.set()
 
     def on_agent_audio(self, audio: bytes) -> None:
@@ -473,38 +488,94 @@ def _ps_all() -> str:
                           text=True).stdout
 
 
-def _footprint_peak(pid: int) -> int:
+def _footprint(pid: int) -> tuple[int, int]:
+    """The macOS footprint of a process in bytes: (now, peak over the process life)."""
     from support_agent.bench.runner import parse_footprint
 
     out = subprocess.run(["footprint", "-f", "bytes", str(pid)], check=False,
                          capture_output=True, text=True).stdout
-    now, peak = parse_footprint(out)
-    return max(now, peak)
+    return parse_footprint(out)
+
+
+def _api_ps_bytes(url: str) -> int:
+    """The Ollama /api/ps size of all loaded models: the Ollama estimate of the weights."""
+    import httpx
+
+    data = httpx.get(url, timeout=5).json()
+    return sum(model.get("size", 0) for model in data.get("models", []))
+
+
+# A difference below this is clock noise, not sleep.
+SLEEP_TOLERANCE_S = 5.0
+
+
+def slept_seconds(wall_s: float, monotonic_s: float) -> float:
+    """The time in seconds that the computer slept during a run.
+
+    On macOS, time.monotonic() stops during sleep and time.time() does not. If the computer
+    sleeps, the pacing and the turn times are not valid.
+    """
+    gap = wall_s - monotonic_s
+    return round(gap, 1) if gap > SLEEP_TOLERANCE_S else 0.0
+
+
+def _context_length(url: str, model: str) -> int | None:
+    """The context length of the loaded model from /api/ps, or None."""
+    with contextlib.suppress(Exception):
+        import httpx
+
+        for item in httpx.get(url, timeout=5).json().get("models", []):
+            if item.get("name") == model:
+                return item.get("context_length")
+    return None
+
+
+MEMORY_KEYS = ("agent_footprint", "runner_footprint", "ollama_rss", "estimate")
 
 
 class ProcessMemoryPoller:
-    """Each second, reads the RSS sum of the Ollama processes and the macOS footprint of the
-    Ollama model runner. It keeps the peak of each.
+    """Each second, reads four memory values and keeps the peak of each, in bytes.
 
-    On macOS, the footprint of the llama.cpp runner misses the mapped model weights. The RSS
-    counts only the weight pages that are in memory at that time.
+    - agent_footprint: the macOS footprint of this process. It includes the Metal memory
+      of MLX Whisper.
+    - runner_footprint: the macOS footprint of the Ollama model runner.
+    - ollama_rss: the RSS sum of all processes with "ollama" in the command.
+    - estimate: the Ollama /api/ps size of the loaded models.
+
+    `peak` has the peaks of the full run. `window` has the peaks since the last
+    `start_window()`, for example for one call.
+
+    On macOS, the footprint of the llama.cpp runner can miss the mapped model weights. The
+    RSS counts only the weight pages that are in memory at that time.
     """
 
-    def __init__(self):
-        self.ollama_peak_rss = 0
-        self.runner_peak_footprint = 0
+    def __init__(self, api_ps_url: str):
+        self.api_ps_url = api_ps_url
+        self.peak = dict.fromkeys(MEMORY_KEYS, 0)
+        self.window = dict.fromkeys(MEMORY_KEYS, 0)
         self._task: asyncio.Task | None = None
 
-    def _poll(self) -> None:
+    def start_window(self) -> None:
+        self.window = dict.fromkeys(MEMORY_KEYS, 0)
+
+    def record(self, sample: dict) -> None:
+        for key, value in sample.items():
+            self.peak[key] = max(self.peak[key], value)
+            self.window[key] = max(self.window[key], value)
+
+    def _sample(self) -> dict:
         rss, runners = parse_ollama_processes(_ps_all())
-        self.ollama_peak_rss = max(self.ollama_peak_rss, rss)
-        for pid in runners:
-            self.runner_peak_footprint = max(self.runner_peak_footprint, _footprint_peak(pid))
+        sample = {"ollama_rss": rss,
+                  "agent_footprint": _footprint(os.getpid())[0],
+                  "runner_footprint": max((_footprint(pid)[0] for pid in runners), default=0)}
+        with contextlib.suppress(Exception):
+            sample["estimate"] = _api_ps_bytes(self.api_ps_url)
+        return sample
 
     async def _loop(self) -> None:
         while True:
             with contextlib.suppress(OSError, ValueError):
-                await asyncio.to_thread(self._poll)
+                self.record(await asyncio.to_thread(self._sample))
             await asyncio.sleep(1)
 
     def start(self) -> None:
@@ -515,6 +586,22 @@ class ProcessMemoryPoller:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
+            self._task = None
+
+
+def memory_upper_gb(memory: dict) -> float:
+    """An upper figure for the memory of all models, in GB.
+
+    It adds the agent footprint, the runner footprint, and the /api/ps estimate. The runner
+    footprint and the estimate can count the same weights two times, so the sum is high.
+    """
+    return round(memory.get("agent_footprint_peak_gb", 0.0)
+                 + memory.get("ollama_runner_footprint_gb", 0.0)
+                 + memory.get("ollama_estimate_gb", 0.0), 1)
+
+
+def _gb(value: float) -> float:
+    return round(value / 1e9, 2)
 
 
 def agent_peak_rss() -> int:
@@ -568,11 +655,58 @@ def caller_audio(kokoro, text: str, voice: str, rate: int) -> bytes:
     return (np.clip(audio, -1.0, 1.0) * 32767).astype("<i2").tobytes()
 
 
+# The setup order of a run. The status turns of calls.yaml check it as "{bench_order}".
+SETUP_ORDER_HANDLE = "breadboard-830"
+SETUP_ORDER_PHONE = "01811111111"
+
+
+async def place_setup_order(store, email: str) -> int:
+    """Places one guest order through the store client, not through the agent.
+
+    The status turns need an order that this run placed, with a phone number that Whisper
+    hears correctly. A setup order does not depend on the agent order call, so a failed
+    order call does not stop the status calls. The order uses the benchmark email.
+    """
+    from support_agent.store.models import Address
+
+    product = await store.get_product(SETUP_ORDER_HANDLE)
+    if product is None or not product.variants:
+        raise RuntimeError(f"The store has no product {SETUP_ORDER_HANDLE}.")
+    address = Address(first_name="Karim", last_name="Ali", address_1="House 5 Road 2",
+                      city="Sylhet", postal_code="3100", phone=SETUP_ORDER_PHONE)
+    order = await store.place_order([(product.variants[0].id, 1)], address, email, None)
+    return order.display_id
+
+
+def check_summary_city(expect: dict, events: list[AgentEvent]) -> list[str]:
+    """Checks the city of the last order summary against "summary_city" in the expectation.
+
+    The store client cannot read the address of a placed order back (OrderView has no
+    address). So the check reads the address in the last prepare_order result. place_order
+    sends that address to the store.
+    """
+    wanted = expect.get("summary_city")
+    if not wanted:
+        return []
+    city = None
+    for e in events:
+        if e.type == "tool_end" and e.data.get("name") == "prepare_order" and e.data.get("ok"):
+            with contextlib.suppress(KeyError, TypeError, ValueError):
+                city = json.loads(e.data["content"])["address"]["city"]
+    if city is None:
+        return ["no order summary to check the city"]
+    if city.strip().lower() != wanted.strip().lower():
+        return [f"order summary city: {city.strip()}, the caller said: {wanted}"]
+    return []
+
+
 async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s: float,
                    bench_order: int | None = None) -> dict:
     """Runs one scripted call through the real pipeline and checks each turn.
 
-    The result has "placed_order": the number of the order that the call placed, or None.
+    "{bench_order}" in the caller text becomes `bench_order`. If `bench_order` is None, a
+    turn that needs it does not play, and the call fails. The result has "placed_order": the number of the order that the call
+    placed, or None.
     """
     from pipecat.workers.runner import WorkerRunner
 
@@ -580,16 +714,20 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
     from support_agent.session import Identity, Session
     from support_agent.voice.pipeline import build_task
 
-    texts = [fill_caller_text(turn["user"], bench_order) for turn in case.turns]
-    if any(text is None for text in texts):
-        failure = "no order of this run to check: an earlier call must place one"
-        return {"id": case.id, "passed": False, "failures": [failure], "turns": [],
-                "seconds": 0.0, "placed_order": None}
-    audio = [caller_audio(deps.models.kokoro, text, voice, rate) for text in texts]
+    call_failures = []
+    script = []
+    for turn in case.turns:
+        text = fill_caller_text(turn["user"], bench_order)
+        if text is None:
+            call_failures.append(f"turn not played, no order of this run to check: "
+                                 f"{turn['user']}")
+        else:
+            script.append((turn, text))
+    audio = [caller_audio(deps.models.kokoro, text, voice, rate) for _, text in script]
     session = Session.new(Identity.guest(), "voice")
-    events: list[list[tuple[str, dict]]] = [[] for _ in case.turns]
-    text_times: list[list[float]] = [[] for _ in case.turns]
-    answers = [0 for _ in case.turns]
+    events: list[list[tuple[str, dict]]] = [[] for _ in script]
+    text_times: list[list[float]] = [[] for _ in script]
+    answers = [0 for _ in script]
     transport: FileAudioTransport | None = None
 
     def listen(kind: str, data: dict) -> None:
@@ -601,6 +739,11 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
             text_times[record.index].append(time.monotonic())
         elif kind in ("answer", "error"):
             answers[record.index] += 1
+            no_audio = kind == "error" or not data.get("text", "").strip()
+            if no_audio and answer_audio_done(record, text_times[record.index],
+                                              answers[record.index]):
+                # No answer audio comes, so no stop frame comes after the answer.
+                transport.end_turn_when_silent()
 
     def turn_done(record: TurnRecord) -> bool:
         # The answer event comes before the last answer audio. So the first stop after the
@@ -616,8 +759,7 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
     runner = WorkerRunner(handle_sigint=False)
     await runner.add_workers(worker)
     started = time.monotonic()
-    limit_s = len(case.turns) * (turn_timeout_s + 30) + 30
-    call_failures = []
+    limit_s = len(script) * (turn_timeout_s + 30) + 30
     try:
         await asyncio.wait_for(runner.run(), limit_s)
     except TimeoutError:
@@ -626,18 +768,23 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
     seconds = time.monotonic() - started
 
     turns = []
-    for number, turn in enumerate(case.turns, start=1):
+    for number, (turn, text) in enumerate(script, start=1):
         record = transport.records[number - 1] if number <= len(transport.records) else None
         turn_events = events[number - 1]
         agent_events = [AgentEvent(kind, float(data.get("t_ms", 0.0)), data)
                         for kind, data in turn_events if kind in AGENT_EVENT_TYPES]
+        expect = turn.get("expect", {})
         if record is None:
             failures = ["turn not played"]
         elif record.timed_out:
             failures = [f"turn timed out after {turn_timeout_s} s"]
         else:
-            failures = check_turn(turn.get("expect", {}),
-                                  answer_with_digits(keep_last_answer(agent_events)), live)
+            failures = check_turn(expect, answer_with_digits(keep_last_answer(agent_events)),
+                                  live)
+            failures += check_summary_city(expect, agent_events)
+            last_answer = next((e for e in reversed(agent_events) if e.type == "answer"), None)
+            if last_answer is not None and not last_answer.data.get("text", "").strip():
+                failures.append("the agent gave an empty answer")
         had_filler = any(kind == "filler" for kind, _ in turn_events)
         metrics = (turn_metrics(record, had_filler) if record is not None
                    else {"first_audio_s": None, "filler_s": None, "answer_s": None,
@@ -647,12 +794,14 @@ async def run_call(case, deps, rate: int, voice: str, live: dict, turn_timeout_s
         turns.append({
             "call": case.id,
             "turn": number,
-            "said": texts[number - 1],
+            "said": text,
             "heard": " ".join(d["text"] for k, d in turn_events if k == "user_text"),
             "tools": [e.data["name"] for e in agent_events if e.type == "tool_start"],
             **metrics,
             "timer_pause_ms": timer_pause,
             "agent_turns": agent_turns,
+            "completion_tokens": [e.data.get("tokens") for e in agent_events
+                                  if e.type == "llm_end"],
             # A split turn gave more than one agent turn, or the agent spoke over the caller.
             "split": agent_turns > 1 or metrics["talked_over"],
             "answer": " / ".join(e.data["text"] for e in agent_events if e.type == "answer"),
@@ -680,7 +829,7 @@ async def _warm_up_llm(settings) -> None:
 
 async def run_calls(rate: int, calls_path: Path = CALLS_PATH,
                     turn_timeout_s: float = TURN_TIMEOUT_S) -> dict:
-    from support_agent.bench.runner import MemoryPoller, _live_prices, load_cases
+    from support_agent.bench.runner import _live_prices, load_cases
     from support_agent.config import get_settings
     from support_agent.llm import OpenAiCompatClient
     from support_agent.store.client import StoreClient
@@ -692,31 +841,40 @@ async def run_calls(rate: int, calls_path: Path = CALLS_PATH,
     voice = next(v for v in CALLER_VOICES if v != settings.voice_tts_voice)
     cases = load_cases(str(calls_path))
     run_id = uuid.uuid4().hex[:8]
+    poller = ProcessMemoryPoller(settings.llm_base_url.removesuffix("/v1") + "/api/ps")
+    calls = []
     try:
         live = await _live_prices(store, cases)
         await deps.models.ensure_loaded()
         await _warm_up_llm(settings)
-        # The chat benchmark poller gives the /api/ps estimate. Its runner lookup does not
-        # find the llama-server runner of Ollama.app, so ProcessMemoryPoller reads that.
-        ollama = MemoryPoller(settings.llm_base_url)
-        processes = ProcessMemoryPoller()
-        ollama.start()
-        processes.start()
+        poller.start()
+        context_length = await asyncio.to_thread(_context_length, poller.api_ps_url,
+                                                 settings.llm_model)
         started = time.monotonic()
-        calls = []
-        with bench_guest_email(f"bench-{run_id}@example.com"):
-            bench_order = None
+        wall_started = time.time()
+        email = f"bench-{run_id}@example.com"
+        bench_order = await place_setup_order(store, email)
+        with bench_guest_email(email):
             for case in cases:
+                poller.start_window()
                 call = await run_call(case, deps, rate, voice, live, turn_timeout_s,
                                       bench_order)
-                bench_order = call["placed_order"] or bench_order
+                window = dict(poller.window)
+                call["memory"] = {
+                    "agent_footprint_gb": _gb(window["agent_footprint"]),
+                    "runner_footprint_gb": _gb(window["runner_footprint"]),
+                    "ollama_rss_gb": _gb(window["ollama_rss"]),
+                    "estimate_gb": _gb(window["estimate"]),
+                }
                 print(f"{'pass' if call['passed'] else 'FAIL'}  {case.id}  "
                       f"{'; '.join(call['failures'])}", flush=True)
                 calls.append(call)
-        await ollama.stop()
-        await processes.stop()
+        seconds = round(time.monotonic() - started, 1)
+        slept = slept_seconds(time.time() - wall_started, time.monotonic() - started)
     finally:
+        await poller.stop()
         await store.aclose()
+    agent_lifetime_peak = max(_footprint(os.getpid()))
     return {
         "rate": rate,
         "model": settings.llm_model,
@@ -725,23 +883,45 @@ async def run_calls(rate: int, calls_path: Path = CALLS_PATH,
         "agent_voice": settings.voice_tts_voice,
         "caller_voice": voice,
         "run_id": run_id,
-        "seconds": round(time.monotonic() - started, 1),
+        "setup_order": bench_order,
+        "context_length": context_length,
+        "slept_s": slept,
+        "seconds": seconds,
         "calls": calls,
         "memory": {
-            "agent_peak_rss_gb": round(agent_peak_rss() / 1e9, 2),
-            "agent_footprint_peak_gb": round(_footprint_peak(os.getpid()) / 1e9, 2),
-            "ollama_peak_rss_gb": round(processes.ollama_peak_rss / 1e9, 2),
-            "ollama_runner_footprint_gb": round(processes.runner_peak_footprint / 1e9, 2),
-            "ollama_estimate_gb": round(ollama.peak_bytes / 1e9, 2),
+            "agent_peak_rss_gb": _gb(agent_peak_rss()),
+            "agent_footprint_peak_gb": _gb(max(agent_lifetime_peak,
+                                               poller.peak["agent_footprint"])),
+            "ollama_peak_rss_gb": _gb(poller.peak["ollama_rss"]),
+            "ollama_runner_footprint_gb": _gb(poller.peak["runner_footprint"]),
+            "ollama_estimate_gb": _gb(poller.peak["estimate"]),
         },
     }
 
 
 # The report
 
+# Goals of the voice design. A missed goal does not fail the run.
+PAUSE_GOAL_S = 1.5
+FILLER_GOAL_S = 1.5
+MEMORY_GOAL_GB = 12.0
+# The evidence of the split-turn defect from the first Task 9 run (16 kHz, run 69f1cb75).
+SPLIT_TURN_EVIDENCE = [
+    "In run 69f1cb75 (16 kHz), the caller said \"My name is Karim Ali. The address is House 5,",
+    "Road 2, Sylhet, postal code 3100. My phone number is 018 1111 1111.\" in one turn. The",
+    "turn-end model ended the turn after the first sentence. The agent answered while the",
+    "caller still spoke. The answer audio started 4.27 s before the end of the caller audio",
+    "(a pause of -4.27 s).",
+]
+
 
 def _seconds(value: float | None) -> str:
     return "-" if value is None else f"{value:.2f}"
+
+
+def _median(values: list[float | None]) -> float | None:
+    present = [v for v in values if v is not None]
+    return statistics.median(present) if present else None
 
 
 def _stats(values: list[float | None]) -> tuple[str, str, int]:
@@ -756,15 +936,50 @@ def _cell(text: str) -> str:
     return text.replace("|", "/").replace("\n", " ")
 
 
-def render_report(result: dict, day: str) -> str:
+def _verdict(value: float | None, goal: float) -> str:
+    if value is None:
+        return "no data"
+    return "met" if value <= goal else "missed"
+
+
+def _goal_lines(turns: list[dict], calls: list[dict], memory: dict) -> list[str]:
+    pause = _median([t["first_audio_s"] for t in turns if not t["tools"]])
+    filler = _median([t["filler_s"] for t in turns if t["tools"]])
+    upper = memory_upper_gb(memory)
+    passed = sum(c["passed"] for c in calls)
+    return [
+        "## Goals",
+        "",
+        "Each goal is a goal, not a gate. A missed goal does not fail the run.",
+        "",
+        "| Goal | Target | Result | Verdict |",
+        "|---|---|---|---|",
+        (f"| Pause median, turns without tools | {PAUSE_GOAL_S} s or less | "
+         f"{_seconds(pause)} s | {_verdict(pause, PAUSE_GOAL_S)} |"),
+        (f"| Filler start median, turns with tools | {FILLER_GOAL_S} s or less | "
+         f"{_seconds(filler)} s | {_verdict(filler, FILLER_GOAL_S)} |"),
+        (f"| Memory upper figure | {MEMORY_GOAL_GB:.0f} GB or less | {upper:.1f} GB | "
+         f"{_verdict(upper, MEMORY_GOAL_GB)} |"),
+        (f"| Calls passed | all | {passed} of {len(calls)} | "
+         f"{'met' if passed == len(calls) else 'missed'} |"),
+        "",
+        "The memory upper figure is the agent footprint, plus the runner footprint, plus the",
+        "Ollama /api/ps estimate. The last two can count the same weights two times.",
+        "",
+    ]
+
+
+def render_report(result: dict, day: str | None = None) -> str:
+    day = day or result.get("date", "")
     rate = result["rate"]
     rate_label = (f"{rate} Hz (the main path: browser and G.722 phone)" if rate == 16000
                   else f"{rate} Hz (G.711 fallback, band-limit only, no codec noise)")
-    turns = [t for call in result["calls"] for t in call["turns"]]
-    whole = [t for t in turns if not t.get("split")]
+    calls = result["calls"]
+    turns = [t for call in calls for t in call["turns"]]
     split = [t for t in turns if t.get("split")]
-    with_tools = [t for t in whole if t["tools"]]
-    without_tools = [t for t in whole if not t["tools"]]
+    talked_over = [t for t in turns if t.get("talked_over")]
+    with_tools = [t for t in turns if t["tools"]]
+    without_tools = [t for t in turns if not t["tools"]]
     memory = result["memory"]
     lines = [
         f"# Voice call benchmark at {rate_label}",
@@ -774,30 +989,46 @@ def render_report(result: dict, day: str) -> str:
         + f". Speech-to-text: {result['stt_model']}. Run ID: {result['run_id']}.",
         (f"Agent voice: {result.get('agent_voice', '-')}. "
          f"Caller voice: {result.get('caller_voice', '-')}. Run time: {result['seconds']} s."),
+        (f"Ollama context: {result.get('context_length', '-')} tokens. "
+         f"Setup order: {result.get('setup_order', '-')}. The bench placed the setup order "
+         "through the store client for the status turns."),
+        "",
+        *([(f"NOT VALID: the computer slept for {result['slept_s']:.0f} s during the run. "
+           "The times and the timeouts are wrong. Run it again with caffeinate -i."), ""]
+          if result.get("slept_s") else []),
+        (f"Sample: {len(calls)} calls, {len(turns)} turns. This is a single run, rough "
+         "baseline. Run it more than one time before you compare two changes."),
         "",
         "The benchmark plays the caller turns of calls.yaml as Kokoro audio through the real",
         "pipeline (VAD, smart turn, Whisper, agent, Kokoro). FileAudioTransport sends the caller",
         "audio in real time and waits until the answer audio of each turn ends.",
         "All times are from the end of the caller audio, so they include the VAD stop time and",
-        "the smart-turn decision.",
+        "the smart-turn decision. The user chat server on port 8100 ran during the run. A user",
+        "test call at the same time can make a turn slow.",
         "",
+    ]
+    lines += _goal_lines(turns, calls, memory)
+    lines += [
         "## Pause",
         "",
-        "The pause is the time to the first agent audio. In a turn with tools, the first agent",
-        "audio is the filler. The answer start is the time to the answer audio.",
+        "The pause is the time to the first agent audio after the end of the caller audio. In",
+        "a turn with tools, the first agent audio is the filler. The answer start is the time",
+        "to the answer audio.",
         "",
         (f"Split turns: {len(split)}. A split turn gave more than one agent turn, or the agent"
-         " spoke before the caller audio ended. The pause numbers do not include split turns."),
+         " spoke before the caller audio ended. The rows without tools, with tools, and all"
+         " turns include the split turns. The split turns also have their own row."
+         f" Turns where the agent spoke over the caller: {len(talked_over)}."),
         "",
         ("| Turns | Count | Pause median (s) | Pause p90 (s) | Answer median (s) | "
          "Answer p90 (s) |"),
         "|---|---|---|---|---|---|",
     ]
     for label, group in (("Without tools", without_tools), ("With tools", with_tools),
-                         ("All", whole)):
-        pause_median, pause_p90, count = _stats([t["first_audio_s"] for t in group])
+                         ("Split turns", split), ("All turns", turns)):
+        pause_median, pause_p90, _ = _stats([t["first_audio_s"] for t in group])
         answer_median, answer_p90, _ = _stats([t["answer_s"] for t in group])
-        lines.append(f"| {label} | {count} | {pause_median} | {pause_p90} | "
+        lines.append(f"| {label} | {len(group)} | {pause_median} | {pause_p90} | "
                      f"{answer_median} | {answer_p90} |")
     lines += [
         "",
@@ -817,7 +1048,7 @@ def render_report(result: dict, day: str) -> str:
         "## Filler",
         "",
     ]
-    fillers = [t for t in whole if t["filler_s"] is not None]
+    fillers = [t for t in turns if t["filler_s"] is not None]
     filler_median, filler_p90, count = _stats([t["filler_s"] for t in fillers])
     lines += [
         (f"Turns with a filler: {count}. Filler start median: {filler_median} s. "
@@ -830,18 +1061,19 @@ def render_report(result: dict, day: str) -> str:
         gap = (None if t["answer_s"] is None else round(t["answer_s"] - t["filler_s"], 3))
         lines.append(f"| {t['call']} | {t['turn']} | {_seconds(t['filler_s'])} | "
                      f"{_seconds(t['answer_s'])} | {_seconds(gap)} |")
-    passed = sum(c["passed"] for c in result["calls"])
+    passed = sum(c["passed"] for c in calls)
     lines += [
         "",
         "## Calls",
         "",
-        f"Passed: {passed} of {len(result['calls'])}. The checks are the chat benchmark checks.",
+        f"Passed: {passed} of {len(calls)}. The checks are the chat benchmark checks.",
         "The benchmark changes number words in the answer to digits before the checks.",
+        "A number in a check does not match a longer number: \"270\" does not match \"2700\".",
         "",
         "| Call | Result | Failures |",
         "|---|---|---|",
     ]
-    for call in result["calls"]:
+    for call in calls:
         lines.append(f"| {call['id']} | {'pass' if call['passed'] else 'FAIL'} | "
                      f"{_cell('; '.join(call['failures'])) or '-'} |")
     lines += ["", "| Call | Turn | Said | Answer |", "|---|---|---|---|"]
@@ -852,7 +1084,10 @@ def render_report(result: dict, day: str) -> str:
         "",
         "## Memory",
         "",
-        "| Process | Peak (GB) |",
+        (f"Memory upper figure: {memory_upper_gb(memory):.1f} GB. The goal is "
+         f"{MEMORY_GOAL_GB:.0f} GB or less."),
+        "",
+        "| Process | Peak of the run (GB) |",
         "|---|---|",
         f"| Agent process, RSS | {memory['agent_peak_rss_gb']} |",
     ]
@@ -862,6 +1097,24 @@ def render_report(result: dict, day: str) -> str:
     lines.append(f"| Ollama runner, macOS footprint | {memory['ollama_runner_footprint_gb']} |")
     if "ollama_estimate_gb" in memory:
         lines.append(f"| Ollama /api/ps estimate | {memory['ollama_estimate_gb']} |")
+    with_memory = [c for c in calls if c.get("memory")]
+    if with_memory:
+        lines += [
+            "",
+            "Peaks during each call (GB). The upper figure adds the agent footprint, the runner",
+            "footprint, and the estimate.",
+            "",
+            ("| Call | Turns | Agent footprint | Runner footprint | Ollama RSS | Estimate | "
+             "Upper figure |"),
+            "|---|---|---|---|---|---|---|",
+        ]
+        for c in with_memory:
+            m = c["memory"]
+            upper = round(m["agent_footprint_gb"] + m["runner_footprint_gb"] + m["estimate_gb"],
+                          1)
+            lines.append(f"| {c['id']} | {len(c['turns'])} | {m['agent_footprint_gb']} | "
+                         f"{m['runner_footprint_gb']} | {m['ollama_rss_gb']} | "
+                         f"{m['estimate_gb']} | {upper} |")
     lines += [
         "",
         "On macOS, the footprint of the llama.cpp runner can miss the mapped model weights,",
@@ -871,6 +1124,33 @@ def render_report(result: dict, day: str) -> str:
         "the context. The agent footprint includes the Metal memory of MLX Whisper. The agent",
         "RSS can miss that memory. The Ollama RSS sum includes the Ollama app and server.",
         "",
+        "## Known findings",
+        "",
+        "Split turns: the turn-end model (smart turn) ends a caller turn at a pause inside a",
+        "sentence. Then the agent answers the first part and speaks over the caller.",
+        *SPLIT_TURN_EVIDENCE,
+        (f"In this run: {len(split)} split turns, and {len(talked_over)} turns where the agent"
+         " spoke over the caller."),
+        "",
+        "The order city: the store client cannot read the address of a placed order back,",
+        "because OrderView has no address. So the city check reads the address in the last",
+        "prepare_order result. place_order sends that address to the store.",
+        "",
+    ]
+    empty = [f for c in calls for f in c["failures"] if "empty answer" in f]
+    lines += [
+        (f"Empty answers: {len(empty)}. After an empty answer the caller hears nothing. The "
+         f"Ollama context is {result.get('context_length', '-')} tokens. A long call can fill"
+         " it, and then the model answer stops early or is empty."),
+        "",
+    ]
+    facts = [f for c in calls for f in c["failures"]
+             if "order summary city" in f or "does not have" in f]
+    if facts:
+        lines += ["Wrong spoken or stored facts in this run:", ""]
+        lines += [f"- {c['id']}: {f}" for c in calls for f in c["failures"] if f in facts]
+        lines.append("")
+    lines += [
         "## Note",
         "",
         "The caller audio is synthetic speech with no noise. A real caller gives more",
@@ -882,8 +1162,18 @@ def render_report(result: dict, day: str) -> str:
 
 
 def write_report(result: dict, reports_dir: Path = REPORTS_DIR) -> Path:
-    today = date.today().isoformat()
-    path = reports_dir / f"{today}-voice-calls-{result['rate']}.md"
+    """Writes the report and the raw result JSON next to it. Returns the report path."""
+    result.setdefault("date", date.today().isoformat())
+    path = reports_dir / f"{result['date']}-voice-calls-{result['rate']}.md"
     reports_dir.mkdir(parents=True, exist_ok=True)
-    path.write_text(render_report(result, today))
+    path.with_suffix(".json").write_text(json.dumps(result, indent=2, ensure_ascii=False))
+    path.write_text(render_report(result))
+    return path
+
+
+def rebuild_report(json_path: Path) -> Path:
+    """Renders the report again from a raw result JSON, with no run. Returns the report path."""
+    result = json.loads(Path(json_path).read_text())
+    path = Path(json_path).with_suffix(".md")
+    path.write_text(render_report(result))
     return path
