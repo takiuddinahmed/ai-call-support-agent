@@ -57,12 +57,8 @@ def test_variant_specs_count():
     assert handles(filter_products(ALL, None, None, [SpecFilter("ram_mb", "gte", 4096)])) == ["pi5"]
 
 
-def test_text_matches_any_word_ranked_by_matches():
+def test_text_single_word_and_no_match():
     assert handles(filter_products(ALL, "distance", None, [])) == ["sr04", "vl53"]
-    # sr04 matches both words, vl53 only one, so sr04 comes first.
-    assert handles(filter_products(ALL, "ultrasonic distance", None, [])) == ["sr04", "vl53"]
-    # No product has both words, but each word finds a product.
-    assert handles(filter_products(ALL, "ESP32 Raspberry", None, [])) == ["esp32", "pi5"]
     assert filter_products(ALL, "submarine", None, []) == []
 
 
@@ -84,3 +80,19 @@ def test_in_stock_only_drops_empty_products():
 def test_category_filter_ignores_case():
     assert len(filter_products(ALL, None, "sensors", [])) == 5
     assert filter_products(ALL, None, "Displays", []) == []
+
+
+def test_words_match_whole_words_only():
+    spi_display = product("oled", {"interface": ["SPI"]}, title="OLED Display SPI")
+    assert handles(filter_products([spi_display, PI], "pi", None, [])) == ["pi5"]
+
+
+def test_all_words_first_then_any_word():
+    # Both words appear only in sr04, so only sr04 is returned.
+    assert handles(filter_products(ALL, "ultrasonic distance", None, [])) == ["sr04"]
+    # No product has both words, so each word finds its product.
+    assert handles(filter_products(ALL, "ESP32 Raspberry", None, [])) == ["esp32", "pi5"]
+
+
+def test_stop_words_are_ignored():
+    assert handles(filter_products(ALL, "a distance sensor for the robot", None, [])) == ["sr04", "vl53"]

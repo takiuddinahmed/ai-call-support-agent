@@ -1,5 +1,6 @@
 """Product search by text, category, and typed specification values."""
 
+import re
 from dataclasses import dataclass
 from typing import Literal
 
@@ -95,14 +96,28 @@ def _matches_filter(product: Product, f: SpecFilter) -> bool:
     return any(_match(specs.get(f.key), f) for specs in spec_sets)
 
 
-def _text_score(product: Product, text: str) -> int:
-    """Counts the words of the text that appear in the product title, description,
-    category, or tags. Models often send several part names in one search, so any word
-    counts, and products with more matching words rank first."""
-    haystack = " ".join(
-        [product.title, product.description, product.category or "", " ".join(product.tags)]
-    ).lower()
-    return sum(1 for word in set(text.lower().split()) if word in haystack)
+STOP_WORDS = {
+    "a", "an", "the", "for", "of", "to", "with", "and", "or", "in", "on", "my", "i", "me",
+    "need", "want", "some", "any", "is", "are", "this", "that", "it", "do", "you", "have",
+    "can", "please", "buy", "which", "what", "good", "best", "suggest", "component", "components",
+}
+
+
+def _words(text: str) -> set[str]:
+    return set(re.findall(r"[a-z0-9]+", text.lower()))
+
+
+def _query_words(text: str) -> set[str]:
+    return _words(text) - STOP_WORDS
+
+
+def _text_score(product: Product, words: set[str]) -> tuple[int, int]:
+    """Returns (number of query words found, weighted score). Words match whole words only.
+    A word in the title counts double."""
+    title = _words(product.title)
+    other = _words(" ".join([product.description, product.category or "", " ".join(product.tags)]))
+    found = [w for w in words if w in title or w in other]
+    return len(found), sum(2 if w in title else 1 for w in found)
 
 
 def filter_products(
@@ -114,12 +129,13 @@ def filter_products(
 ) -> list[Product]:
     for f in filters:
         _check(f)
+    words = _query_words(text) if text else set()
     result = []
-    scores: dict[str, int] = {}
+    scores: dict[str, tuple[int, int]] = {}
     for product in products:
-        if text:
-            scores[product.id] = _text_score(product, text)
-            if scores[product.id] == 0:
+        if words:
+            scores[product.id] = _text_score(product, words)
+            if scores[product.id][0] == 0:
                 continue
         if category and (product.category or "").lower() != category.strip().lower():
             continue
@@ -127,6 +143,10 @@ def filter_products(
             continue
         if all(_matches_filter(product, f) for f in filters):
             result.append(product)
-    if text:
-        result.sort(key=lambda p: -scores[p.id])
+    if words:
+        # Products with all the words come first. Without such a product, any word counts,
+        # because models often put several part names in one search.
+        complete = [p for p in result if scores[p.id][0] == len(words)]
+        result = complete or result
+        result.sort(key=lambda p: -scores[p.id][1])
     return result

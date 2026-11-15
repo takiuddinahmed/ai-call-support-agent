@@ -71,12 +71,12 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
         except StoreAuthError:
             return JSONResponse({"message": "The email or the password is wrong."}, 401)
         customer = await store.get_customer(token)
-        session.identity = Identity(kind="customer", token=token, customer=customer)
+        session.start_over(Identity(kind="customer", token=token, customer=customer))
         return {"first_name": customer.first_name}
 
     @app.post("/api/logout")
     async def logout(body: SessionRef):
-        session_for(body.session_id).identity = Identity.guest()
+        session_for(body.session_id).start_over(Identity.guest())
         return {"ok": True}
 
     @app.post("/api/chat")

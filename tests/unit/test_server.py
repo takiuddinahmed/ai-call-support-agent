@@ -74,3 +74,17 @@ def test_logout_returns_to_guest():
     client.post("/api/logout", json={"session_id": sid})
     client.post("/api/chat", json={"session_id": sid, "message": "hi"})
     assert "not logged in" in llm.seen[0][0]["content"]
+
+
+def test_login_and_logout_start_a_clean_conversation():
+    client, llm = make_client(rounds=("a", "b", "c"))
+    sid = new_session(client)
+    client.post("/api/chat", json={"session_id": sid, "message": "my address is House 5"})
+    client.post("/api/login", json={"session_id": sid, "email": "rahim@example.com",
+                                    "password": "Demo1234!"})
+    client.post("/api/chat", json={"session_id": sid, "message": "hi"})
+    assert "House 5" not in json.dumps(llm.seen[1])
+    client.post("/api/logout", json={"session_id": sid})
+    client.post("/api/chat", json={"session_id": sid, "message": "hi again"})
+    assert "Rahim" not in json.dumps(llm.seen[2][1:])
+    assert len([m for m in llm.seen[2] if m["role"] == "user"]) == 1

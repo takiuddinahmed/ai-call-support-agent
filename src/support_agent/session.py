@@ -43,3 +43,12 @@ class Session:
     @classmethod
     def new(cls, identity: Identity, channel: Channel = "chat") -> "Session":
         return cls(id=uuid.uuid4().hex, identity=identity, channel=channel)
+
+    def start_over(self, identity: Identity) -> None:
+        """Changes the customer and forgets the conversation, the summaries, and the
+        verified orders, so that nothing passes from one person to the next."""
+        self.identity = identity
+        self.messages = []
+        self.customer_turns = 0
+        self.summaries = {}
+        self.verified_orders = set()

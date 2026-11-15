@@ -154,3 +154,63 @@ async def test_filters_that_match_nothing_fall_back_to_the_words():
                          filters=[{"key": "ram_mb", "op": "gte", "value": 999999}])
     assert ok and [p["handle"] for p in data["products"]] == ["esp32-devkit-v1"]
     assert "No product matched the filters" in data["note"]
+
+
+# Final review fixes
+
+import httpx  # noqa: E402
+
+from support_agent.store.client import StoreError  # noqa: E402
+
+
+@pytest.mark.parametrize("name,args", [
+    ("get_order_status", {"display_id": "six"}),
+    ("prepare_order", {"items": "esp32"}),
+    ("prepare_order", {"items": [ITEM], "address": "Dhaka, House 5"}),
+    ("search_products", {"filters": ["wifi"]}),
+    ("search_products", {"text": 5}),
+    ("track_shipment", {"tracking_number": 12}),
+])
+async def test_bad_argument_shapes_give_tool_errors(name, args):
+    result = await ToolRunner(FakeStore(), customer()).run(name, json.dumps(args))
+    assert result.ok is False
+    assert result.content
+
+
+async def test_store_down_gives_tool_error():
+    class DownStore(FakeStore):
+        async def list_products(self):
+            raise httpx.ConnectError("refused")
+
+    result = await ToolRunner(DownStore(), guest()).run("search_products", '{"text": "esp32"}')
+    assert result.ok is False and "store" in result.content.lower()
+
+
+async def test_new_summary_replaces_old_ones():
+    session = customer()
+    store = FakeStore()
+    _, first = await run(session, store, "prepare_order", items=[ITEM])
+    _, second = await run(session, store, "prepare_order", items=[ITEM],
+                          address=dict(GUEST_ADDRESS))
+    session.customer_turns += 1
+    ok, message = await run(session, store, "place_order", summary_id=first["summary_id"])
+    assert not ok and "Unknown summary" in message
+    ok, _ = await run(session, store, "place_order", summary_id=second["summary_id"])
+    assert ok and store.placed[0][1].city == "Sylhet"
+
+
+async def test_failed_place_order_cannot_be_retried_into_a_duplicate():
+    class FailingStore(FakeStore):
+        async def place_order(self, items, address, email, token):
+            self.placed.append(items)
+            raise StoreError("The lookup after the order failed.")
+
+    session = customer()
+    store = FailingStore()
+    _, summary = await run(session, store, "prepare_order", items=[ITEM])
+    session.customer_turns += 1
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok
+    ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok and "Unknown summary" in message
+    assert len(store.placed) == 1

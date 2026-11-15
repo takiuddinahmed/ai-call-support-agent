@@ -330,7 +330,18 @@ class StoreClient:
         if result.get("type") != "order":
             raise StoreError((result.get("error") or {}).get("message", "The order failed."))
         self._products = None  # stock changed
-        order = await self.lookup_order(result["order"]["display_id"], email, None)
-        if order is None:
-            raise StoreError("The store created the order, but the lookup did not find it.")
-        return order
+        placed = result["order"]
+        try:
+            order = await self.lookup_order(placed["display_id"], email, None)
+        except httpx.HTTPError:
+            order = None
+        # The order exists now. If the lookup fails, return what the store sent back.
+        return order or OrderView(
+            display_id=placed["display_id"],
+            status=placed.get("status", "pending"),
+            created_at=placed.get("created_at", ""),
+            total_bdt=_bdt(placed.get("total")),
+            items=[],
+            shipping_option=None,
+            tracking=None,
+        )

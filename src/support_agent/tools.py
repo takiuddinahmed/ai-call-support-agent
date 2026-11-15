@@ -6,6 +6,8 @@ import time
 import uuid
 from dataclasses import asdict, dataclass
 
+import httpx
+
 from support_agent.session import OrderSummary, Session
 from support_agent.specs import SpecFilter, SpecFilterError, filter_products
 from support_agent.store.client import StoreError
@@ -55,7 +57,7 @@ TOOL_SPECS: list[dict] = [
         "Find products by words, category, and spec values. Use spec filters for needs such as "
         "voltage, interface, Wi-Fi, memory, or range. Returns at most 8 products.",
         {
-            "text": {"type": "string", "description": "Words that must all appear, in English."},
+            "text": {"type": "string", "description": "One part type in English, e.g. line sensor."},
             "category": {"type": "string"},
             "filters": {
                 "type": "array",
@@ -192,14 +194,22 @@ class ToolRunner:
             content, ok = json.dumps(data, ensure_ascii=False, separators=(",", ":")), True
         except (ToolError, SpecFilterError, StoreError) as error:
             content, ok = str(error), False
-        except TypeError as error:
-            content, ok = f"Wrong arguments for '{name}': {error}.", False
+        except (TypeError, ValueError, AttributeError, KeyError) as error:
+            content, ok = f"Wrong arguments for '{name}': {error}. Check the tool schema.", False
+        except httpx.HTTPError:
+            content, ok = "The store is not reachable now. Tell the customer to try again later.", False
+        except Exception as error:  # noqa: BLE001  a tool must never break the conversation
+            content, ok = f"The tool '{name}' failed: {type(error).__name__}.", False
         return ToolResult(ok, content, (time.perf_counter() - start) * 1000)
 
     # Products
 
     async def _tool_search_products(self, text=None, category=None, filters=None,
                                     in_stock_only=False) -> dict:
+        if text is not None and not isinstance(text, str):
+            raise ToolError("text must be a string.")
+        if not isinstance(filters or [], list) or not all(isinstance(f, dict) for f in filters or []):
+            raise ToolError("filters must be a list of {key, op, value} objects.")
         spec_filters = [SpecFilter(f.get("key"), f.get("op"), f.get("value")) for f in filters or []]
         products = filter_products(
             await self.store.list_products(), text, category, spec_filters, bool(in_stock_only)
@@ -251,6 +261,8 @@ class ToolRunner:
             email = identity.customer.email
         if not email and not phone:
             raise ToolError("Ask the customer for the email or phone of the order first.")
+        if isinstance(display_id, bool) or not str(display_id).strip().isdigit():
+            raise ToolError("display_id must be the order number, for example 6.")
         order = await self.store.lookup_order(int(display_id), email, phone)
         if order is None:
             raise ToolError("No order matches this order number with this email or phone.")
@@ -258,6 +270,8 @@ class ToolRunner:
         return {"order": _order_view(order)}
 
     async def _tool_track_shipment(self, tracking_number: str) -> dict:
+        if not isinstance(tracking_number, str):
+            raise ToolError("tracking_number must be a string such as DEMO-1234567890.")
         tracking = await self.store.track(tracking_number.strip().upper())
         if tracking is None:
             raise ToolError("No shipment has this tracking number.")
@@ -268,12 +282,14 @@ class ToolRunner:
         }
 
     async def _tool_prepare_order(self, items, address=None, email=None) -> dict:
-        if not items:
-            raise ToolError("Give at least one item.")
+        if not isinstance(items, list) or not items or not all(isinstance(i, dict) for i in items):
+            raise ToolError("items must be a list of {handle, variant_title, quantity} objects.")
+        if address is not None and not isinstance(address, dict):
+            raise ToolError("address must be an object with first_name, address_1, city, and phone.")
         resolved = []
         for item in items:
             quantity = item.get("quantity")
-            if not isinstance(quantity, int) or not 1 <= quantity <= MAX_QUANTITY:
+            if isinstance(quantity, bool) or not isinstance(quantity, int) or not 1 <= quantity <= MAX_QUANTITY:
                 raise ToolError(f"The quantity must be 1 to {MAX_QUANTITY}.")
             product = await self.store.get_product(item.get("handle", ""))
             if product is None:
@@ -298,6 +314,8 @@ class ToolRunner:
             quote=quote,
             customer_turn_at_creation=self.session.customer_turns,
         )
+        # Only the latest summary can be placed. A change makes the old summary invalid.
+        self.session.summaries.clear()
         self.session.summaries[summary.id] = summary
         return {
             "summary_id": summary.id,
@@ -340,9 +358,11 @@ class ToolRunner:
             raise ToolError("Unknown summary_id. Call prepare_order first.")
         if self.session.customer_turns <= summary.customer_turn_at_creation:
             raise ToolError("Read the summary to the customer and wait for a clear yes.")
+        # Remove the summary before the store call, so that a retry after an unclear failure
+        # cannot place a second order.
+        del self.session.summaries[summary_id]
         order = await self.store.place_order(
             summary.items, summary.address, summary.email, self.session.identity.token
         )
-        del self.session.summaries[summary_id]
         self.session.verified_orders.add(order.display_id)
         return {"order": _order_view(order)}
