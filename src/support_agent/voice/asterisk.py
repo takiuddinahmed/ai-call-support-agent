@@ -138,8 +138,10 @@ class AsteriskFrameSerializer(FrameSerializer):
         name, _fields = parse_control(data)
         if name == "HANGUP":
             return EndFrame()
-        if name in ("MEDIA_XOFF", "MEDIA_XON"):
-            logger.warning(f"Asterisk sent {name}: its queue of agent audio is full or free.")
+        if name == "MEDIA_XOFF":
+            logger.warning("Asterisk sent MEDIA_XOFF: its queue of agent audio is full.")
+        elif name == "MEDIA_XON":
+            logger.info("Asterisk sent MEDIA_XON: its queue of agent audio has space again.")
         elif name:
             logger.debug(f"Asterisk control message: {name}")
         return None

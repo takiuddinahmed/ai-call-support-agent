@@ -87,6 +87,11 @@ ollama stop <model>
 | `LLM_REASONING_EFFORT` | `low` | Hidden thinking: `none`, `low`, `medium`, `high`, or empty for the model default |
 | `MAX_TOOL_ROUNDS` | `6` | Tool rounds per turn. After the last round, the agent answers without tools. |
 | `CATALOG_CACHE_SECONDS` | `300` | How long the agent keeps the product list |
+| `AGENT_PHONE_TOKEN` | empty | Shared secret of the Asterisk phone route. Use the same value in `../demo-store/.env`. Empty refuses every phone call. |
+| `MAX_CALL_SECONDS` | `900` | The agent hangs up a phone call after this time |
+| `ALLOWED_HOSTS` | `["localhost","127.0.0.1","host.docker.internal"]` | Host names that the server accepts |
+
+The debug routes accept only clients on this computer. Docker Desktop shows each container as `127.0.0.1`, so the containers on this Mac are trusted local clients for the debug routes.
 
 ## Tests
 

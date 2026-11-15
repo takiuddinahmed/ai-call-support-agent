@@ -22,8 +22,9 @@ from support_agent.voice.routes import voice_router
 
 STATIC = Path(__file__).parent / "static"
 PORT = 8100
-# Asterisk in Docker connects with this host name. Docker Desktop forwards the connection
-# as client 127.0.0.1, so the local-client check of the debug routes cannot see it.
+# Asterisk in Docker connects with this host name. Docker Desktop forwards each container
+# connection as client 127.0.0.1, so the local-client check of the debug routes cannot
+# tell a container from this computer.
 DOCKER_HOST_NAME = "host.docker.internal"
 
 
@@ -60,8 +61,10 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
 
     @app.middleware("http")
     async def docker_host_gets_only_the_phone_route(request: Request, call_next):
-        # A container uses the Docker host name. It can open only the phone WebSocket,
-        # which is not an HTTP request. So it gets no page, no chat, and no debug data.
+        # A convenience, not a security boundary: an HTTP request with the Docker host
+        # name gets 403, so that the phone host name opens only the phone WebSocket. A
+        # container can send any Host header and looks like 127.0.0.1. So the containers
+        # on this computer are trusted local clients. The phone route has its own token.
         if request.url.hostname == DOCKER_HOST_NAME:
             return JSONResponse({"detail": "This host name is only for the phone route."},
                                 403)

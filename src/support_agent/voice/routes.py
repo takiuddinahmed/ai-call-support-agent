@@ -6,6 +6,9 @@ pipeline only inside the call handlers, at the first call.
 """
 
 import asyncio
+import base64
+import binascii
+import hmac
 import json
 from collections.abc import Awaitable, Callable
 from contextlib import aclosing
@@ -67,6 +70,27 @@ def phone_frame_size(optimal_frame_size: int) -> int:
     return parts * SLIN16_10MS_BYTES if parts > 0 else 2 * SLIN16_10MS_BYTES
 
 
+def phone_token_matches(authorization: str | None, token: str) -> bool:
+    """True if the HTTP Basic password in the Authorization header is the phone token.
+
+    Asterisk sends the "username" and "password" of websocket_client.conf as HTTP Basic
+    authentication. The user name is not checked. An empty token never matches.
+    """
+    if not token or not authorization:
+        return False
+    scheme, _, value = authorization.partition(" ")
+    if scheme.lower() != "basic" or not value:
+        return False
+    try:
+        decoded = base64.b64decode(value.strip(), validate=True)
+    except (binascii.Error, ValueError):
+        return False
+    _user, sep, password = decoded.partition(b":")
+    if not sep:
+        return False
+    return hmac.compare_digest(password, token.encode())
+
+
 def require_local_client(request: Request) -> None:
     host = request.client.host if request.client else None
     if host not in LOCAL_CLIENTS:
@@ -103,6 +127,8 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
     # True from the start of an offer to the end of its call. With the hub check, it
     # allows one call at a time.
     busy = False
+    # True after the first warning about an empty phone token.
+    warned_no_token = False
     # The running tasks of the calls. The set keeps a reference until each task ends.
     tasks: set[asyncio.Task] = set()
 
@@ -217,15 +243,18 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
         return answer
 
     async def read_media_start(websocket: WebSocket):
-        """Waits for MEDIA_START. Returns None and closes the connection if it is not valid."""
+        """Waits for MEDIA_START. Returns None and closes the connection if it is not valid.
+
+        The wait has one deadline. Other messages before MEDIA_START do not extend it.
+        """
         from support_agent.voice.asterisk import SLIN16, parse_control, parse_media_start
 
-        async def receive() -> dict:
-            return await asyncio.wait_for(websocket.receive(), MEDIA_START_TIMEOUT_S)
-
+        loop = asyncio.get_running_loop()
+        deadline = loop.time() + MEDIA_START_TIMEOUT_S
         while True:
             try:
-                message = await receive()
+                message = await asyncio.wait_for(websocket.receive(),
+                                                 max(0.0, deadline - loop.time()))
             except TimeoutError:
                 logger.warning("Asterisk sent no MEDIA_START. The phone call ends.")
                 await websocket.send_text("HANGUP")
@@ -250,6 +279,21 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
                 return None
             return start
 
+    def phone_caller_allowed(websocket: WebSocket) -> bool:
+        nonlocal warned_no_token
+        token = deps.settings.phone_token
+        if not token:
+            if not warned_no_token:
+                warned_no_token = True
+                logger.warning("AGENT_PHONE_TOKEN is not set, so the phone route refuses "
+                               "every call. Set the same token in the agent .env and the "
+                               "demo-store .env.")
+            return False
+        if not phone_token_matches(websocket.headers.get("authorization"), token):
+            logger.warning("A phone connection had no valid token. It is refused.")
+            return False
+        return True
+
     @router.websocket(deps.settings.voice_asterisk_path)
     async def asterisk_call(websocket: WebSocket):
         """One phone call from Asterisk chan_websocket. The caller is a guest."""
@@ -257,6 +301,10 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
         # Asterisk sends no Origin header. A web browser always sends one. So a web page
         # cannot start a phone call on this local server.
         if websocket.headers.get("origin"):
+            await websocket.close(code=CLOSE_POLICY)
+            return
+        # The shared secret comes before the busy check, so that a stranger learns nothing.
+        if not phone_caller_allowed(websocket):
             await websocket.close(code=CLOSE_POLICY)
             return
         # Before the accept, uvicorn answers HTTP 403. Then the Asterisk Dial fails, and
@@ -311,9 +359,23 @@ def voice_router(deps: VoiceDeps, sessions: dict[str, Session], hub: DebugHub) -
             async def on_client_disconnected(_transport, _websocket):
                 await task.cancel(reason="Asterisk closed the phone call.")
 
-            runner = WorkerRunner(handle_sigint=False)
-            await runner.add_workers(task)
-            await runner.run()
+            async def end_at_limit() -> None:
+                await asyncio.sleep(deps.settings.max_call_seconds)
+                logger.info(f"Phone call {call_id} reached {deps.settings.max_call_seconds} s. "
+                            "The agent hangs up.")
+                try:
+                    await websocket.send_text("HANGUP")
+                except Exception:  # noqa: BLE001  the caller can hang up at the same time
+                    logger.debug("The HANGUP command did not go out.")
+                await task.cancel(reason="The call reached the maximum length.")
+
+            limit = asyncio.create_task(end_at_limit())
+            try:
+                runner = WorkerRunner(handle_sigint=False)
+                await runner.add_workers(task)
+                await runner.run()
+            finally:
+                limit.cancel()
         except WebSocketDisconnect:
             logger.info("Asterisk closed the connection before the call started.")
         except Exception:  # noqa: BLE001  a failed call must not stop the server

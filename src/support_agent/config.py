@@ -4,6 +4,7 @@ import shlex
 import subprocess
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
 
@@ -32,6 +33,13 @@ class Settings(BaseSettings):
     voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
     voice_tts_voice: str = "af_heart"
     voice_asterisk_path: str = "/api/voice/asterisk"
+    # Shared secret of the phone route (env AGENT_PHONE_TOKEN). Asterisk sends it as the
+    # HTTP Basic password ("password" in websocket_client.conf). If it is empty, the
+    # phone route refuses every call.
+    phone_token: str = Field("", validation_alias=AliasChoices("AGENT_PHONE_TOKEN",
+                                                                "phone_token"))
+    # The phone route ends a call after this time, in seconds.
+    max_call_seconds: int = 900
     # Host names that the server accepts in the Host header. Other names get 400.
     # Asterisk in Docker connects to the phone route with host.docker.internal. The debug
     # routes still accept only clients on this computer.
