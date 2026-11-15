@@ -187,11 +187,17 @@ class AgentProcessor(FrameProcessor):
         """Turns on the history rule for the heard part of an interrupted answer."""
         self._tracks_spoken_text = True
 
-    def note_spoken(self, text: str) -> None:
-        """Records answer text that the text-to-speech step spoke."""
+    def note_spoken(self, text: str) -> bool:
+        """Records answer text that the text-to-speech step spoke.
+
+        Returns False if the processor ignores the text, because it came after an
+        interruption.
+        """
         # After an interruption, the heard part of the answer does not change.
-        if not self._interrupted:
-            self._spoken.append(text)
+        if self._interrupted:
+            return False
+        self._spoken.append(text)
+        return True
 
     def _handle_transcription(self, text: str) -> None:
         text = text.strip()
@@ -398,16 +404,28 @@ class SpokenTextTracker(FrameProcessor):
 
     Put it after the TTS service. After the output transport, each TTSTextFrame comes after
     the audio of its text went to the transport. The tracker passes on all frames.
+
+    If `on_event` is set, the tracker also sends a "spoken" event with `{"text"}` for each
+    piece of answer text that the AgentProcessor records.
     """
 
-    def __init__(self, agent: AgentProcessor, **kwargs):
+    def __init__(self, agent: AgentProcessor, on_event: EventCallback | None = None, **kwargs):
         super().__init__(**kwargs)
         self._agent = agent
+        self._on_event = on_event
         agent.attach_spoken_text_tracker()
 
     async def process_frame(self, frame: Frame, direction: FrameDirection):
         await super().process_frame(frame, direction)
         # A TTSSpeakFrame with append_to_context=False (the filler) is not answer text.
-        if isinstance(frame, TTSTextFrame) and frame.append_to_context:
-            self._agent.note_spoken(frame.text)
+        if (
+            isinstance(frame, TTSTextFrame)
+            and frame.append_to_context
+            and self._agent.note_spoken(frame.text)
+            and self._on_event is not None
+        ):
+            try:
+                await self._on_event("spoken", {"text": frame.text})
+            except Exception:  # noqa: BLE001  a failed debug callback must not stop the call
+                logger.exception(f"{self}: the event callback failed for spoken")
         await self.push_frame(frame, direction)

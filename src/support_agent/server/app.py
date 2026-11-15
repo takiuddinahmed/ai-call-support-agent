@@ -1,4 +1,5 @@
-"""Chat server: login, chat with streamed agent events, and the model list."""
+"""Chat and voice server: login, chat with streamed agent events, the model list, and
+browser voice calls."""
 
 from pathlib import Path
 from typing import Literal
@@ -14,6 +15,9 @@ from support_agent.loop import run_turn
 from support_agent.session import Identity, Session
 from support_agent.store.client import StoreAuthError, StoreClient
 from support_agent.tools import ToolRunner
+from support_agent.voice.debug_hub import DebugHub
+from support_agent.voice.pipeline import VoiceDeps
+from support_agent.voice.routes import voice_router
 
 STATIC = Path(__file__).parent / "static"
 PORT = 8100
@@ -46,6 +50,10 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
     models = models or llm
     sessions: dict[str, Session] = {}
     app = FastAPI(title="Support agent")
+    hub = DebugHub()
+    app.state.voice_hub = hub
+    # The voice routes share the sessions, so that login and logout work for the voice page.
+    app.include_router(voice_router(VoiceDeps(settings, store, llm), sessions, hub))
 
     def session_for(session_id: str) -> Session:
         session = sessions.get(session_id)

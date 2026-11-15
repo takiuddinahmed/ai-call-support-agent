@@ -11,7 +11,7 @@ dependencies = [
     "fastapi>=0.163.0",
     "httpx>=0.28.1",
     "openai>=3.51.0",
-    "pipecat-ai[kokoro,local-smart-turn,mlx-whisper,silero,webrtc,websocket]==1.16.0",
+    "pipecat-ai[kokoro,local-smart-turn,mlx-whisper,silero,webrtc,websocket,whisper]==1.16.0",
     "pydantic-settings>=2.16.3",
     "pyyaml>=6.0.3",
     "uvicorn[standard]>=0.54.0",
