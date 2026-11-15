@@ -1,0 +1,65 @@
+# Test sentences for the speech-to-text benchmark.
+- group: product
+  text: "What is the price of the ESP32?"
+- group: product
+  text: "Do you have the Arduino Uno in stock?"
+- group: product
+  text: "I need an L298N motor driver."
+- group: product
+  text: "Tell me about the Raspberry Pi 5."
+- group: product
+  text: "Is the ESP32 DevKit better than the Arduino Uno for Wi-Fi projects?"
+- group: product
+  text: "I want two L298N motor drivers and one Raspberry Pi 5."
+- group: product
+  text: "Do you sell servo motors for a robot arm?"
+- group: product
+  text: "Which board has Bluetooth, the ESP32 or the Arduino Uno?"
+- group: order
+  text: "Where is my order number 1042?"
+- group: order
+  text: "I want to track order 2087."
+- group: order
+  text: "My order number is 3015 and my email is rahim at example dot com."
+- group: order
+  text: "Can you cancel order 4456?"
+- group: order
+  text: "The tracking number is BD 778 4521."
+- group: phone
+  text: "My phone number is 01712345678."
+- group: phone
+  text: "You can call me on 01911223344."
+- group: phone
+  text: "Please send the message to 01811 556677."
+- group: phone
+  text: "My other number is 01555 889900."
+- group: address
+  text: "Please deliver it to House 12, Road 5, Dhanmondi, Dhaka."
+- group: address
+  text: "My address is Flat 4B, 27 Mirpur Road, Dhaka."
+- group: address
+  text: "Deliver to Gulshan 2, Dhaka, near the circle."
+- group: address
+  text: "I live in Uttara, Sector 7, Dhaka."
+- group: address
+  text: "Send it to Agrabad, Chittagong."
+- group: yesno
+  text: "Yes, please."
+- group: yesno
+  text: "No, thank you."
+- group: yesno
+  text: "Yes, place the order."
+- group: yesno
+  text: "No, do not place it."
+- group: yesno
+  text: "Yes, that is correct."
+- group: yesno
+  text: "No, that is wrong."
+- group: product
+  text: "How much is the HC-SR04 ultrasonic sensor?"
+- group: order
+  text: "Please check order 5120 for me."
+- group: address
+  text: "My address is House 8, Road 3, Banani, Dhaka."
+- group: yesno
+  text: "No, I want to change the address."
