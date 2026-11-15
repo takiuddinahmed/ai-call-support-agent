@@ -1,10 +1,13 @@
-"""Chat server: login, chat with streamed agent events, and the model list."""
+"""Chat and voice server: login, chat with streamed agent events, the model list, and
+browser voice calls."""
 
+from contextlib import aclosing
 from pathlib import Path
 from typing import Literal
 
 import uvicorn
-from fastapi import FastAPI, HTTPException
+from fastapi import FastAPI, HTTPException, Request
+from fastapi.middleware.trustedhost import TrustedHostMiddleware
 from fastapi.responses import FileResponse, JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
@@ -14,9 +17,16 @@ from support_agent.loop import run_turn
 from support_agent.session import Identity, Session
 from support_agent.store.client import StoreAuthError, StoreClient
 from support_agent.tools import ToolRunner
+from support_agent.voice.debug_hub import DebugHub
+from support_agent.voice.deps import VoiceDeps
+from support_agent.voice.routes import voice_router
 
 STATIC = Path(__file__).parent / "static"
 PORT = 8100
+# Asterisk in Docker connects with this host name. Docker Desktop forwards each container
+# connection as client 127.0.0.1, so the local-client check of the debug routes cannot
+# tell a container from this computer.
+DOCKER_HOST_NAME = "host.docker.internal"
 
 
 class SessionIn(BaseModel):
@@ -46,6 +56,26 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
     models = models or llm
     sessions: dict[str, Session] = {}
     app = FastAPI(title="Support agent")
+    # A Host header check stops DNS rebinding: a hostile web page cannot reach this local
+    # server under its own domain name.
+    app.add_middleware(TrustedHostMiddleware, allowed_hosts=settings.allowed_hosts)
+
+    @app.middleware("http")
+    async def docker_host_gets_only_the_phone_route(request: Request, call_next):
+        # A convenience, not a security boundary: an HTTP request with the Docker host
+        # name gets 403, so that the phone host name opens only the phone WebSocket. A
+        # container can send any Host header and looks like 127.0.0.1. So the containers
+        # on this computer are trusted local clients. The phone route has its own token.
+        if request.url.hostname == DOCKER_HOST_NAME:
+            return JSONResponse({"detail": "This host name is only for the phone route."},
+                                403)
+        return await call_next(request)
+
+    hub = DebugHub()
+    app.state.voice_hub = hub
+    app.state.sessions = sessions
+    # The voice routes share the sessions, so that login and logout work for the voice page.
+    app.include_router(voice_router(VoiceDeps(settings, store, llm), sessions, hub))
 
     def session_for(session_id: str) -> Session:
         session = sessions.get(session_id)
@@ -88,10 +118,14 @@ def create_app(settings: Settings, store=None, llm=None, models=None) -> FastAPI
 
         async def stream():
             runner = ToolRunner(store, session)
-            async for event in run_turn(
-                session, body.message, llm, runner, model, settings.max_tool_rounds
-            ):
-                yield f"data: {event.to_json()}\n\n"
+            # aclosing ends the turn at once when the client closes the connection.
+            async with aclosing(run_turn(
+                session, body.message, llm, runner, model, settings.max_tool_rounds,
+                reasoning_effort_after_tools=settings.llm_reasoning_effort_after_tools,
+                max_prompt_tokens=settings.max_prompt_tokens,
+            )) as events:
+                async for event in events:
+                    yield f"data: {event.to_json()}\n\n"
 
         return StreamingResponse(stream(), media_type="text/event-stream")
 

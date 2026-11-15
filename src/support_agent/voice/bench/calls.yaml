@@ -1,0 +1,161 @@
+# Scripted calls for the full voice pipeline benchmark.
+# The shape and the checks are the same as the chat benchmark cases (src/support_agent/bench/cases).
+#
+# Kokoro speaks the "user" text as the caller. Rules for the caller text:
+# - Write phone numbers digit by digit, so that the caller voice says each digit.
+# - Give one fact in one short turn, as a caller does on a phone call. Smart turn ends a turn
+#   at a pause, and Kokoro pauses inside a long sentence. Then the agent answers only the
+#   first part of the turn (the report calls this a split turn).
+# - The call voice-natural-long-turns breaks the rule above on purpose. It measures split turns.
+# - "{bench_order}" becomes the number of the setup order. The benchmark places the setup
+#   order through the store client at the start of the run (breadboard 830, Karim Ali,
+#   Sylhet, phone 01811111111, the benchmark email). It does not depend on the order call.
+#
+# The guest order uses the benchmark email bench-<run id>@example.com. The benchmark sets it in
+# place of the voice guest placeholder email. Never place an order as a sample customer.
+- id: voice-product-question
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Hello can you help me find a part?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+    - user: How much is the ESP32 DevKit?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: ["{live:price:esp32-devkit-v1}"]
+        tools_not_called: [prepare_order, place_order]
+    - user: Okay thank you that is all for now.
+      expect:
+        tools_not_called: [prepare_order, place_order]
+- id: voice-guest-order-yes
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: I want to order one breadboard 830.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: My name is Karim Ali.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: The address is House 5 Road 2 in Sylhet.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: My phone number is 0 1 8 1 1 1 1 1 1 1 1.
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+        answer_contains_any: ["270"]
+        # The Outside Dhaka delivery fee, and the city in the order summary. The total
+        # alone can hide a wrong fee or a wrong city.
+        answer_contains_all: ["150"]
+        summary_city: Sylhet
+    - user: Yes please place the order.
+      expect:
+        order_placed: true
+# The guest checks the setup order with its phone number.
+- id: voice-guest-order-status
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Hi I want to check the status of my order.
+      expect:
+        tools_not_called: [get_order_status]
+        answer_contains_any: [phone, number]
+    - user: The order number is {bench_order}.
+      expect:
+        tools_not_called: [place_order]
+    - user: My phone number is 0 1 8 1 1 1 1 1 1 1 1.
+      expect:
+        tools_called: [get_order_status]
+        answer_contains_any: [pending, processing, placed, received, "not yet", confirmed]
+# Natural long caller turns: a long sentence with a pause in the middle, and a phone number
+# said in groups. These turns can split (see the "Known findings" part of the report).
+- id: voice-natural-long-turns
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: >-
+        Hi there, I ordered a breadboard from your shop a little while ago, and I want to
+        know if it has shipped yet.
+      expect:
+        tools_not_called: [place_order]
+    - user: >-
+        Sure, the order number is {bench_order}, and the phone number on the order is
+        0 1 8 1 1, 1 1 1, 1 1 1 1.
+      expect:
+        tools_called: [get_order_status]
+        answer_contains_any: [pending, processing, placed, received, "not yet", confirmed,
+                              "not shipped"]
+    - user: >-
+        Okay, thanks. While I have you, I also need a distance sensor for my robot. How much
+        is the HC SR04 ultrasonic sensor?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:hc-sr04-ultrasonic-sensor}"]
+# A long call for the memory peak: 20 turns of product and order status questions, and no
+# order placement.
+- id: voice-long-call-memory
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Hello I need some parts for a robot.
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: Do you have the Arduino Uno?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: How much is the Arduino Uno?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:arduino-uno-r3}"]
+    - user: Is the Raspberry Pi 5 in stock?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: What memory sizes does it have?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: Do you sell servo motors?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: How much is the SG90 servo?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:sg90-micro-servo}"]
+    - user: Do you have an ultrasonic sensor?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: Do you have a motor driver?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: How much is the L298N motor driver?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:l298n-motor-driver}"]
+    - user: Do you have a breadboard?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: What is the price of the breadboard 830?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:breadboard-830}"]
+    - user: Do you have jumper wires?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: How much is the DHT11 sensor?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+        answer_contains_any: ["{live:price:dht11-sensor}"]
+    - user: I also want to check an order.
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: The order number is {bench_order}.
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: My phone number is 0 1 8 1 1 1 1 1 1 1 1.
+      expect:
+        tools_called: [get_order_status]
+        tools_not_called: [prepare_order, place_order]
+    - user: Is it shipped yet?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: Do you deliver outside Dhaka?
+      expect: {tools_not_called: [prepare_order, place_order]}
+    - user: Okay thank you that is all.
+      expect: {tools_not_called: [prepare_order, place_order]}

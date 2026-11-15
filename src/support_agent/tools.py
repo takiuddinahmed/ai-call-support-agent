@@ -143,6 +143,13 @@ def _is_bd_mobile(phone: str) -> bool:
     return re.fullmatch(r"1[3-9]\d{8}", local) is not None
 
 
+def voice_guest_email(phone: str) -> str:
+    """Makes the placeholder email of a voice guest from the phone number."""
+    digits = re.sub(r"[\s-]", "", phone).lstrip("+")
+    local = digits[3:] if digits.startswith("880") else digits.removeprefix("0")
+    return f"voice-880{local}@guest.robopartsbd.local"
+
+
 def _product_view(product: Product, full: bool = False) -> dict:
     view = {
         "handle": product.handle,
@@ -334,8 +341,11 @@ class ToolRunner:
         customer = self.session.identity.customer
         base = customer.default_address if customer else None
         fields = {
-            "first_name": given.get("first_name") or (base.first_name if base else ""),
-            "last_name": given.get("last_name") or (base.last_name if base else ""),
+            # The account name is the fallback, because an account can have no saved address.
+            "first_name": given.get("first_name") or (base.first_name if base else "")
+            or (customer.first_name if customer else ""),
+            "last_name": given.get("last_name") or (base.last_name if base else "")
+            or (customer.last_name if customer else ""),
             "address_1": given.get("address_1") or (base.address_1 if base else ""),
             "city": given.get("city") or (base.city if base else ""),
             "postal_code": given.get("postal_code") or (base.postal_code if base else ""),
@@ -344,18 +354,39 @@ class ToolRunner:
         }
         final_email = email or (customer.email if customer else "")
         missing = [k for k in ("first_name", "address_1", "city", "phone") if not fields[k]]
-        if not final_email:
+        voice_email = self.session.channel == "voice" and not final_email
+        if not final_email and not voice_email:
             missing.append("email")
         if missing:
-            raise ToolError(f"Ask the customer for: {', '.join(missing)}.")
+            names = {"first_name": "name", "address_1": "address", "city": "city",
+                     "phone": "phone number", "email": "email"}
+            account = ""
+            if customer and base is None:
+                account = ("The account has no saved address, but it has the other details. "
+                           "Do not ask for them. ")
+            raise ToolError(
+                f"The items are fine, but the delivery details are missing. {account}Ask the "
+                f"customer only for the {', '.join(names[k] for k in missing)}. Then call "
+                "prepare_order again with the same items and the details."
+            )
         if not _is_bd_mobile(fields["phone"]):
             raise ToolError("The phone must be a Bangladesh mobile number, for example 01712345678.")
+        if voice_email:
+            final_email = voice_guest_email(fields["phone"])
         return Address(**fields), final_email
 
     async def _tool_place_order(self, summary_id: str) -> dict:
         summary = self.session.summaries.get(summary_id)
         if summary is None:
             raise ToolError("Unknown summary_id. Call prepare_order first.")
+        if self.session.channel == "voice":
+            if not summary.heard:
+                raise ToolError("Call prepare_order again with the same details, read the new "
+                                "summary in full, then ask for a clear yes.")
+            if (summary.approvable_after_turn is not None
+                    and self.session.customer_turns <= summary.approvable_after_turn):
+                raise ToolError("The customer spoke before the summary ended. "
+                                "Ask for a clear yes now.")
         if self.session.customer_turns <= summary.customer_turn_at_creation:
             raise ToolError("Read the summary to the customer and wait for a clear yes.")
         # Remove the summary before the store call, so that a retry after an unclear failure

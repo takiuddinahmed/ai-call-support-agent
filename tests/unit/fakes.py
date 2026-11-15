@@ -1,5 +1,7 @@
 """A fake store with the same method names as StoreClient, for unit tests."""
 
+import asyncio
+
 from support_agent.store.client import StoreError, shipping_zone_for_city
 from support_agent.store.models import (
     Address, Customer, OrderItem, OrderView, Product, Quote, QuoteLine,
@@ -29,6 +31,8 @@ class FakeStore:
     def __init__(self):
         self.calls: list[tuple] = []
         self.placed: list[tuple] = []
+        # Tests set a delay to cancel a turn while place_order runs.
+        self.place_delay_s = 0.0
 
     async def list_products(self):
         return [ESP, PI, STM]
@@ -65,33 +69,44 @@ class FakeStore:
         return Quote(lines, "Inside Dhaka" if inside else "Outside Dhaka", fee, subtotal, subtotal + fee)
 
     async def place_order(self, items, address, email, token):
+        if self.place_delay_s:
+            await asyncio.sleep(self.place_delay_s)
         self.placed.append((items, address, email, token))
         return OrderView(10, "pending", "2026-11-15T10:00:00Z", 1180,
                          [OrderItem("ESP32 DevKit V1", "Default", 2)], "Inside Dhaka", None)
 
 
 class FakeLlm:
-    """Plays scripted rounds. Each round is a text answer or a list of (name, arguments)."""
+    """Plays scripted rounds. Each round is a text answer or a list of (name, arguments).
 
-    def __init__(self, rounds, error: Exception | None = None):
+    delay_s is a wait before each chunk, so that a test can cancel a turn during a stream.
+    """
+
+    def __init__(self, rounds, error: Exception | None = None, delay_s: float = 0.0):
         self.rounds = list(rounds)
         self.error = error
+        self.delay_s = delay_s
         self.seen: list[list[dict]] = []
         self.tools_seen: list[list[dict]] = []
+        self.efforts_seen: list[str | None] = []
 
-    async def stream(self, model, messages, tools):
+    async def stream(self, model, messages, tools, reasoning_effort: str | None = None):
         from support_agent.llm import LlmChunk, ToolCallDelta
 
         self.seen.append(list(messages))
         self.tools_seen.append(list(tools))
+        self.efforts_seen.append(reasoning_effort)
         if self.error:
             raise self.error
         step = self.rounds.pop(0)
         if isinstance(step, str):
             for word in step.split(" "):
+                await asyncio.sleep(self.delay_s)
                 yield LlmChunk(text=word + " ")
+            await asyncio.sleep(self.delay_s)
             yield LlmChunk(usage={"completion_tokens": len(step.split())})
         else:
+            await asyncio.sleep(self.delay_s)
             yield LlmChunk(tool_calls=[
                 ToolCallDelta(index=i, id=f"call_{i}", name=name, arguments=args)
                 for i, (name, args) in enumerate(step)

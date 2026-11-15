@@ -200,7 +200,10 @@ async function send(text) {
         reply.textContent = d.text || answer;
         wrap.querySelector(".total").textContent = `Turn total ${(d.total_ms / 1000).toFixed(2)} s`;
       }
-      if (e.type === "error") {
+      if (e.type === "error" && d.fallback) {
+        // The agent answers with a fixed line. The debug table shows the error.
+        addRow(wrap, [cell("Error"), cell(d.message, "bad"), cell(""), cell(""), cell(""), cell(""), cell("")]);
+      } else if (e.type === "error") {
         reply.remove();
         bubble("err", d.message);
         if (wrap) wrap.querySelector(".total").textContent = "Error";

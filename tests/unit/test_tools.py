@@ -74,7 +74,7 @@ async def test_guest_order_status_needs_proof():
 
 async def test_customer_order_status_uses_account_email():
     store = FakeStore()
-    ok, data = await run(customer(), store, "get_order_status", display_id=3)
+    ok, _data = await run(customer(), store, "get_order_status", display_id=3)
     assert ok and store.calls[-1] == ("lookup_order", 3, "rahim@example.com", None)
 
 
@@ -158,9 +158,9 @@ async def test_filters_that_match_nothing_fall_back_to_the_words():
 
 # Final review fixes
 
-import httpx  # noqa: E402
+import httpx
 
-from support_agent.store.client import StoreError  # noqa: E402
+from support_agent.store.client import StoreError
 
 
 @pytest.mark.parametrize("name,args", [
@@ -214,3 +214,80 @@ async def test_failed_place_order_cannot_be_retried_into_a_duplicate():
     ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
     assert not ok and "Unknown summary" in message
     assert len(store.placed) == 1
+
+
+def voice_guest():
+    return Session.new(Identity.guest(), "voice")
+
+
+async def test_voice_place_order_needs_heard_summary():
+    store = FakeStore()
+    session = voice_guest()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert ok
+    turn = session.customer_turns
+    session.customer_turns += 1
+    ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok and "Call prepare_order again with the same details" in message
+    assert store.placed == []
+    session.mark_summaries_heard(turn)
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_voice_place_order_needs_a_turn_after_the_held_speech():
+    store = FakeStore()
+    session = voice_guest()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert ok
+    turn = session.customer_turns
+    # One caller text waited during the summary audio. It becomes turn + 1.
+    session.mark_summaries_heard(turn, approvable_after_turn=turn + 1)
+    session.customer_turns = turn + 1
+    ok, message = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert not ok and "spoke before the summary ended" in message
+    assert store.placed == []
+    session.customer_turns = turn + 2
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_chat_place_order_needs_no_heard_flag():
+    store = FakeStore()
+    session = customer()
+    ok, summary = await run(session, store, "prepare_order", items=[ITEM])
+    session.customer_turns += 1
+    ok, _ = await run(session, store, "place_order", summary_id=summary["summary_id"])
+    assert ok and len(store.placed) == 1
+
+
+async def test_voice_guest_order_without_email_uses_phone_email():
+    address = {**GUEST_ADDRESS, "phone": "01712345678"}
+    ok, summary = await run(voice_guest(), FakeStore(), "prepare_order", items=[ITEM], address=address)
+    assert ok and summary["email"] == "voice-8801712345678@guest.robopartsbd.local"
+
+
+async def test_chat_guest_order_without_email_still_asks_for_email():
+    ok, message = await run(guest(), FakeStore(), "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
+    assert not ok and "email" in message
+
+
+async def test_account_without_an_address_gives_its_name_and_phone():
+    from dataclasses import replace
+
+    no_address = replace(RAHIM, default_address=None)
+    session = Session.new(Identity(kind="customer", token="tok", customer=no_address), "voice")
+    store = FakeStore()
+    items = [{"handle": "esp32-devkit-v1", "quantity": 1}]
+    ok, content = await run(session, store, "prepare_order", items=items)
+    assert not ok
+    # Only the address is missing. The account has the name and the phone.
+    assert "address, city" in content
+    assert "name" not in content and "phone" not in content
+    assert "no saved address" in content
+    ok, summary = await run(session, store, "prepare_order", items=items,
+                            address={"address_1": "Road 5, Mirpur", "city": "Dhaka"})
+    assert ok, summary
+    assert summary["address"]["first_name"] == "Rahim"
+    assert summary["address"]["last_name"] == "Uddin"
+    assert summary["address"]["phone"] == "+8801711000001"

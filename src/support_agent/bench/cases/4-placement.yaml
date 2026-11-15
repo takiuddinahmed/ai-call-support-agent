@@ -11,6 +11,8 @@
         tools_called: [prepare_order]
         order_placed: false
         answer_contains_any: ["270"]
+        # The Outside Dhaka delivery fee. The total alone can hide a wrong fee.
+        answer_contains_all: ["150"]
     - user: Yes, please place the order.
       expect:
         order_placed: true

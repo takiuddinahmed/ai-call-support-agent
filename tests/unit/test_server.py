@@ -10,7 +10,7 @@ from tests.unit.fakes import FakeLlm, FakeModels, FakeStore
 def make_client(rounds=("Hello",)):
     llm = FakeLlm(list(rounds))
     app = create_app(Settings(_env_file=None), store=FakeStore(), llm=llm, models=FakeModels())
-    return TestClient(app), llm
+    return TestClient(app, base_url="http://localhost"), llm
 
 
 def new_session(client, channel="chat"):
@@ -88,3 +88,31 @@ def test_login_and_logout_start_a_clean_conversation():
     client.post("/api/chat", json={"session_id": sid, "message": "hi again"})
     assert "Rahim" not in json.dumps(llm.seen[2][1:])
     assert len([m for m in llm.seen[2] if m["role"] == "user"]) == 1
+
+
+async def test_chat_stream_closes_the_turn_when_the_client_leaves(monkeypatch):
+    closed = []
+
+    async def fake_run_turn(*args, **kwargs):
+        from support_agent.loop import AgentEvent
+
+        try:
+            yield AgentEvent("turn_start", 0.0)
+            yield AgentEvent("text", 1.0, {"text": "Hi"})
+        finally:
+            closed.append(True)
+
+    monkeypatch.setattr("support_agent.server.app.run_turn", fake_run_turn)
+    app = create_app(Settings(_env_file=None), store=FakeStore(), llm=FakeLlm([]),
+                     models=FakeModels())
+    from support_agent.server.app import ChatIn
+
+    sid = TestClient(app, base_url="http://localhost").post(
+        "/api/session", json={"channel": "chat"}).json()["session_id"]
+    route = next(r for r in app.routes if getattr(r, "path", None) == "/api/chat")
+    response = await route.endpoint(ChatIn(session_id=sid, message="hi"))
+    body = response.body_iterator
+    await anext(body)
+    # The client closed the connection after the first event.
+    await body.aclose()
+    assert closed == [True]

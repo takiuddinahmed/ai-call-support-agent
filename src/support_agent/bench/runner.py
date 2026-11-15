@@ -17,7 +17,7 @@ import yaml
 
 from support_agent.config import Settings, get_settings
 from support_agent.llm import OpenAiCompatClient
-from support_agent.loop import AgentEvent, run_turn
+from support_agent.loop import DEFAULT_MAX_PROMPT_TOKENS, AgentEvent, run_turn
 from support_agent.session import Identity, Session
 from support_agent.store.client import StoreClient
 from support_agent.tools import ToolRunner
@@ -60,6 +60,23 @@ def normalize_answer(text: str) -> str:
     return re.sub(r"(?<=\d),(?=\d)", "", text)
 
 
+def contains_term(text: str, term: str) -> bool:
+    """True if the normalized text has the term.
+
+    A term that starts or ends with a digit must not touch another digit at that side.
+    So "270" does not match "2700" or "1270". Other terms match as a part of a word, so
+    that a Bangla word stem still matches.
+    """
+    if not term:
+        return True
+    pattern = re.escape(term)
+    if term[0].isdigit():
+        pattern = r"(?<!\d)" + pattern
+    if term[-1].isdigit():
+        pattern += r"(?!\d)"
+    return re.search(pattern, text) is not None
+
+
 def _expand(value: str, live: dict[str, int]) -> str:
     return LIVE_PRICE.sub(lambda m: str(live.get(m.group(1), "?")), value)
 
@@ -77,10 +94,13 @@ def check_turn(expect: dict, events: list[AgentEvent], live: dict[str, int]) -> 
         if name in called:
             failures.append(f"tool called but must not be: {name}")
     wanted = [normalize_answer(_expand(w, live)) for w in expect.get("answer_contains_any", [])]
-    if wanted and not any(w in text for w in wanted):
+    if wanted and not any(contains_term(text, w) for w in wanted):
         failures.append(f"answer has none of: {wanted}")
+    for need in expect.get("answer_contains_all", []):
+        if not contains_term(text, normalize_answer(_expand(need, live))):
+            failures.append(f"answer does not have: {need}")
     for bad in expect.get("answer_not_contains", []):
-        if normalize_answer(_expand(bad, live)) in text:
+        if contains_term(text, normalize_answer(_expand(bad, live))):
             failures.append(f"answer contains: {bad}")
     if "order_placed" in expect:
         placed = any(e.type == "tool_end" and e.data["name"] == "place_order" and e.data["ok"]
@@ -110,13 +130,17 @@ async def _live_prices(store, cases: list[Case]) -> dict[str, int]:
 TURN_TIMEOUT_S = 120
 
 
-async def _collect(session, text, llm, runner, model, max_tool_rounds) -> list[AgentEvent]:
-    return [e async for e in run_turn(session, text, llm, runner, model, max_tool_rounds)]
+async def _collect(session, text, llm, runner, model, max_tool_rounds,
+                   **options) -> list[AgentEvent]:
+    return [e async for e in run_turn(session, text, llm, runner, model, max_tool_rounds,
+                                      **options)]
 
 
 async def run_case(case: Case, model: str, store, llm, max_tool_rounds: int, run_id: str,
                    live: dict[str, int] | None = None,
-                   turn_timeout_s: float = TURN_TIMEOUT_S) -> CaseResult:
+                   turn_timeout_s: float = TURN_TIMEOUT_S,
+                   reasoning_effort_after_tools: str = "",
+                   max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS) -> CaseResult:
     live = live if live is not None else await _live_prices(store, [case])
     identity = Identity.guest()
     if case.login in LOGINS:
@@ -128,7 +152,9 @@ async def run_case(case: Case, model: str, store, llm, max_tool_rounds: int, run
         text = turn["user"].replace("{bench_email}", f"bench-{run_id}@example.com")
         try:
             events = await asyncio.wait_for(
-                _collect(session, text, llm, ToolRunner(store, session), model, max_tool_rounds),
+                _collect(session, text, llm, ToolRunner(store, session), model, max_tool_rounds,
+                         reasoning_effort_after_tools=reasoning_effort_after_tools,
+                         max_prompt_tokens=max_prompt_tokens),
                 turn_timeout_s,
             )
             failures = check_turn(turn.get("expect", {}), events, live)
@@ -275,7 +301,11 @@ async def main_async(args) -> int:
     start = time.perf_counter()
     results = []
     for case in cases:
-        result = await run_case(case, args.model, store, llm, settings.max_tool_rounds, run_id, live)
+        result = await run_case(
+            case, args.model, store, llm, settings.max_tool_rounds, run_id, live,
+            reasoning_effort_after_tools=settings.llm_reasoning_effort_after_tools,
+            max_prompt_tokens=settings.max_prompt_tokens,
+        )
         print(f"{'pass' if result.passed else 'FAIL'}  {case.id}  {'; '.join(result.failures)}",
               flush=True)
         results.append(result)
@@ -283,6 +313,8 @@ async def main_async(args) -> int:
     await store.aclose()
     summary = summarize(args.model, results, poller.peak_bytes, time.perf_counter() - start)
     summary["reasoning_effort"] = settings.llm_reasoning_effort
+    summary["reasoning_effort_after_tools"] = settings.llm_reasoning_effort_after_tools
+    summary["max_prompt_tokens"] = settings.max_prompt_tokens
     summary["peak_runner_footprint_gb"] = round(poller.peak_footprint / 1e9, 2)
     path = write_report(Path(args.out), summary, results)
     print(json.dumps(summary, indent=2))

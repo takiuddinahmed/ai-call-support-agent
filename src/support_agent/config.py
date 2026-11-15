@@ -4,7 +4,10 @@ import shlex
 import subprocess
 from functools import lru_cache
 
+from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
+
+from support_agent.history import DEFAULT_MAX_PROMPT_TOKENS
 
 
 class Settings(BaseSettings):
@@ -26,8 +29,31 @@ class Settings(BaseSettings):
     # about 0.2 s but skips the store tools and invents prices; "low" uses the tools and
     # gives the first token in about 2 s.
     llm_reasoning_effort: str = "low"
+    # The thinking level of each model call after a tool result in the same turn. Empty
+    # uses llm_reasoning_effort. See reports/2026-11-15-task-11-context-and-effort.md.
+    llm_reasoning_effort_after_tools: str = ""
+    # The prompt budget in estimated tokens (about 3 characters for each token, see
+    # history.py). It must stay under the model context. Ollama uses 4096 tokens by default.
+    max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
+    # Voice channel. The speech benchmark can change the models.
+    # Whisper turbo, not small: in the Task 11 call runs, small heard the phone number
+    # "0 1 8 1 1 1 1 1 1 1 1" with 10 digits in 3 calls. Turbo heard 11 digits.
+    voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
+    voice_tts_voice: str = "af_heart"
+    voice_asterisk_path: str = "/api/voice/asterisk"
+    # Shared secret of the phone route (env AGENT_PHONE_TOKEN). Asterisk sends it as the
+    # HTTP Basic password ("password" in websocket_client.conf). If it is empty, the
+    # phone route refuses every call.
+    phone_token: str = Field("", validation_alias=AliasChoices("AGENT_PHONE_TOKEN",
+                                                                "phone_token"))
+    # The server ends a browser call or a phone call after this time, in seconds.
+    max_call_seconds: int = 900
+    # Host names that the server accepts in the Host header. Unknown names get 400.
+    # Asterisk in Docker connects to the phone route with host.docker.internal. That name gets
+    # 403 on every route except the phone route. The debug routes accept only local clients.
+    allowed_hosts: list[str] = ["localhost", "127.0.0.1", "host.docker.internal"]
 
 
 @lru_cache

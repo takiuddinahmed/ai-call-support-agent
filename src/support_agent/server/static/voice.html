@@ -1,0 +1,322 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Support Agent Voice</title>
+<style>
+  :root {
+    --bg: #f6f7f9; --panel: #ffffff; --text: #1d2330; --muted: #677085; --line: #e2e5eb;
+    --accent: #2457d6; --accent-text: #ffffff; --me: #e8efff; --bot: #f1f2f5;
+    --ok: #1f8a4c; --bad: #c0392b; --code: #f4f5f7;
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #12151b; --panel: #1a1e26; --text: #e6e8ee; --muted: #9aa3b5; --line: #2b313d;
+      --accent: #6d93ff; --accent-text: #0d1220; --me: #233257; --bot: #232833;
+      --ok: #4cc683; --bad: #ff7b6b; --code: #20252f;
+    }
+  }
+  * { box-sizing: border-box; }
+  [hidden] { display: none !important; }
+  body { margin: 0; font: 14px/1.45 system-ui, -apple-system, sans-serif; background: var(--bg); color: var(--text); }
+  main { display: grid; grid-template-columns: minmax(300px, 0.8fr) minmax(420px, 1.6fr); gap: 16px; padding: 16px; height: 100vh; }
+  @media (max-width: 900px) { main { grid-template-columns: 1fr; height: auto; } }
+  section { background: var(--panel); border: 1px solid var(--line); border-radius: 10px; display: flex; flex-direction: column; min-height: 0; }
+  header { padding: 12px 14px; border-bottom: 1px solid var(--line); display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  header h1 { font-size: 15px; margin: 0 auto 0 0; }
+  input, button { font: inherit; color: var(--text); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; padding: 6px 8px; }
+  button { cursor: pointer; }
+  button:disabled { cursor: default; opacity: 0.5; }
+  button.primary { background: var(--accent); color: var(--accent-text); border-color: var(--accent); }
+  #login { display: flex; gap: 6px; flex-wrap: wrap; padding: 10px 14px; border-bottom: 1px solid var(--line); }
+  #login input { flex: 1 1 140px; }
+  #who { color: var(--muted); }
+  #call { padding: 14px; display: flex; flex-direction: column; gap: 12px; }
+  #buttons { display: flex; gap: 8px; }
+  #status { color: var(--muted); }
+  #status.bad { color: var(--bad); }
+  #debug { flex: 1; overflow: auto; padding: 0 14px 14px; }
+  .call { margin-top: 12px; }
+  .call h2 { font-size: 13px; margin: 0 0 6px; display: flex; justify-content: space-between; gap: 8px; }
+  table { width: 100%; border-collapse: collapse; font-size: 12px; }
+  th, td { text-align: left; padding: 4px 6px; border-bottom: 1px solid var(--line); vertical-align: top; }
+  th { color: var(--muted); font-weight: 500; }
+  td.num, th.num { text-align: right; font-variant-numeric: tabular-nums; white-space: nowrap; }
+  .filler { color: var(--muted); font-style: italic; }
+  .ok { color: var(--ok); } .bad { color: var(--bad); }
+  .hint { color: var(--muted); font-size: 12px; padding: 14px 0; margin: 0; }
+</style>
+</head>
+<body>
+<main>
+  <section aria-label="Voice call">
+    <header>
+      <h1>Robo Parts BD voice support</h1>
+      <span id="who">Guest</span>
+      <button id="logout" hidden>Log out</button>
+    </header>
+    <form id="login">
+      <input id="email" type="email" placeholder="Store account email" autocomplete="username">
+      <input id="password" type="password" placeholder="Password" autocomplete="current-password">
+      <button class="primary" type="submit">Log in</button>
+      <button type="button" id="guest">Call as guest</button>
+    </form>
+    <div id="call">
+      <div id="buttons">
+        <button class="primary" id="start">Start call</button>
+        <button id="end" disabled>End call</button>
+      </div>
+      <p id="status">No call. Speak English after you start the call.</p>
+      <audio id="agent-audio" autoplay></audio>
+    </div>
+  </section>
+
+  <section aria-label="Debug panel">
+    <header><h1>Debug panel</h1></header>
+    <div id="debug"><p class="hint" id="no-calls">Each call shows here. Each turn shows the heard text, the spoken text, and the time of each step in milliseconds.</p></div>
+  </section>
+</main>
+
+<script>
+const $ = (id) => document.getElementById(id);
+let sessionId = null;
+let pc = null;
+let mic = null;
+
+async function api(path, body) {
+  const response = await fetch(path, {
+    method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body),
+  });
+  const data = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(data.message || data.detail || `Request failed (${response.status})`);
+  return data;
+}
+
+function status(text, bad) {
+  $("status").textContent = text;
+  $("status").className = bad ? "bad" : "";
+}
+
+async function newSession() {
+  sessionId = (await api("/api/session", { channel: "voice" })).session_id;
+  $("who").textContent = "Guest";
+  $("logout").hidden = true;
+  $("login").hidden = false;
+}
+
+// Call
+
+function waitForIce(peer) {
+  if (peer.iceGatheringState === "complete") return Promise.resolve();
+  return new Promise((resolve) => {
+    const done = () => { if (peer.iceGatheringState === "complete") resolve(); };
+    peer.addEventListener("icegatheringstatechange", done);
+    setTimeout(resolve, 2000);
+  });
+}
+
+async function startCall() {
+  $("start").disabled = true;
+  status("Starting the call. The first call loads the voice models. This can take a few minutes.");
+  try {
+    // Each call starts a fresh conversation. The login stays.
+    await api("/api/voice/new-call", { session_id: sessionId });
+    mic = await navigator.mediaDevices.getUserMedia({
+      audio: { echoCancellation: true, noiseSuppression: true, autoGainControl: true },
+    });
+    pc = new RTCPeerConnection();
+    pc.addTransceiver(mic.getAudioTracks()[0], { direction: "sendrecv" });
+    pc.ontrack = (event) => {
+      $("agent-audio").srcObject = event.streams[0] || new MediaStream([event.track]);
+    };
+    pc.onconnectionstatechange = () => {
+      if (!pc) return;
+      if (pc.connectionState === "connected") status("In call. Speak now.");
+      if (["failed", "closed"].includes(pc.connectionState)) endCall("The call ended.");
+    };
+    await pc.setLocalDescription(await pc.createOffer());
+    await waitForIce(pc);
+    const answer = await api("/api/voice/offer", {
+      session_id: sessionId, sdp: pc.localDescription.sdp, type: pc.localDescription.type,
+    });
+    await pc.setRemoteDescription({ sdp: answer.sdp, type: answer.type });
+    $("end").disabled = false;
+    $("logout").disabled = true;
+    $("login").hidden = true;
+  } catch (error) {
+    endCall(error.message, true);
+  }
+}
+
+function endCall(message, bad) {
+  if (pc) { pc.close(); pc = null; }
+  if (mic) { mic.getTracks().forEach((track) => track.stop()); mic = null; }
+  $("agent-audio").srcObject = null;
+  $("start").disabled = false;
+  $("end").disabled = true;
+  $("logout").disabled = false;
+  status(message || "No call.", bad);
+}
+
+// Debug panel
+
+const calls = {};
+
+function cell(text, cls) {
+  const td = document.createElement("td");
+  if (cls) td.className = cls;
+  td.textContent = text ?? "";
+  return td;
+}
+
+function callCard(callId, data) {
+  if (calls[callId]) return calls[callId];
+  $("no-calls").hidden = true;
+  const wrap = document.createElement("div");
+  wrap.className = "call";
+  const when = new Date((data.at || Date.now() / 1000) * 1000).toLocaleTimeString();
+  wrap.innerHTML = `<h2><span></span><span class="state"></span></h2>
+    <table><thead><tr><th>Turn</th><th>Heard</th><th>Spoken</th>
+    <th class="num">Speech end</th><th class="num">Speech-to-text</th><th class="num">First token</th>
+    <th class="num">Model</th><th>Tools</th><th class="num">First audio</th><th class="num">Pause</th>
+    </tr></thead><tbody></tbody></table>`;
+  wrap.querySelector("h2 span").textContent = `${data.channel || "browser"} call · ${data.caller || ""} · ${when}`;
+  wrap.querySelector(".state").textContent = "Active";
+  $("debug").prepend(wrap);
+  calls[callId] = { wrap, rows: [] };
+  return calls[callId];
+}
+
+const COLUMNS = ["turn", "heard", "spoken", "speech_end", "stt", "first_token", "model", "tools", "first_audio", "pause"];
+
+function newRow(call) {
+  const tr = document.createElement("tr");
+  const row = { tr, cells: {}, model: 0, tools: [], spoken: [], agentStarted: false, heard: "" };
+  for (const name of COLUMNS) {
+    const td = cell("", ["heard", "spoken", "tools", "turn"].includes(name) ? "" : "num");
+    row.cells[name] = td;
+    tr.appendChild(td);
+  }
+  row.cells.turn.textContent = call.rows.length + 1;
+  call.wrap.querySelector("tbody").appendChild(tr);
+  call.rows.push(row);
+  return row;
+}
+
+function current(call) {
+  return call.rows[call.rows.length - 1] || newRow(call);
+}
+
+function rowForCaller(call) {
+  const row = current(call);
+  return row.agentStarted ? newRow(call) : row;
+}
+
+function handle(event) {
+  const d = event.data || {};
+  if (event.kind === "call_start") { callCard(event.call_id, { ...d, at: event.at }); return; }
+  const call = calls[event.call_id] || callCard(event.call_id, {});
+  let row;
+  switch (event.kind) {
+    case "call_end":
+      call.wrap.querySelector(".state").textContent = "Ended";
+      return;
+    case "speech_end":
+      rowForCaller(call).cells.speech_end.textContent = d.ms;
+      return;
+    case "stt":
+      row = rowForCaller(call);
+      row.cells.stt.textContent = d.ms;
+      if (!row.heard) row.cells.heard.textContent = d.text;
+      return;
+    case "user_text":
+      row = rowForCaller(call);
+      row.heard = d.text;
+      row.cells.heard.textContent = d.text;
+      return;
+    case "turn_start":
+      row = current(call);
+      if (row.agentStarted) row = newRow(call);
+      row.agentStarted = true;
+      return;
+    case "first_token":
+      row = current(call);
+      if (!row.cells.first_token.textContent) row.cells.first_token.textContent = d.ms;
+      return;
+    case "llm_end":
+      row = current(call);
+      row.model += d.ms || 0;
+      row.cells.model.textContent = Math.round(row.model);
+      return;
+    case "tool_end":
+      row = current(call);
+      row.tools.push(`${d.name} ${d.ms} ms${d.ok ? "" : " (failed)"}`);
+      row.cells.tools.textContent = row.tools.join(", ");
+      return;
+    case "filler":
+    case "spoken": {
+      row = current(call);
+      const span = document.createElement("span");
+      span.textContent = `${d.text} `;
+      if (event.kind === "filler") span.className = "filler";
+      row.cells.spoken.appendChild(span);
+      return;
+    }
+    case "interrupted": {
+      // The caller stopped this turn: "speech" is the VAD, "words" is a transcription.
+      const span = document.createElement("span");
+      span.className = "filler";
+      span.textContent = `[stopped by the caller ${d.by}] `;
+      current(call).cells.spoken.appendChild(span);
+      return;
+    }
+    case "first_audio":
+      current(call).cells.first_audio.textContent = d.ms;
+      return;
+    case "pause":
+      current(call).cells.pause.textContent = d.ms;
+      return;
+    case "error": {
+      row = current(call);
+      const span = document.createElement("span");
+      span.className = "bad";
+      span.textContent = d.message;
+      row.cells.spoken.appendChild(span);
+      return;
+    }
+  }
+}
+
+async function loadCalls() {
+  const list = await fetch("/api/voice/calls").then((r) => r.json());
+  for (const call of list) {
+    for (const event of call.events) handle(event);
+  }
+  const source = new EventSource("/api/voice/events");
+  source.onmessage = (message) => handle(JSON.parse(message.data));
+}
+
+$("login").addEventListener("submit", async (event) => {
+  event.preventDefault();
+  try {
+    const data = await api("/api/login", { session_id: sessionId, email: $("email").value, password: $("password").value });
+    $("who").textContent = `Logged in as ${data.first_name}`;
+    $("login").hidden = true;
+    $("logout").hidden = false;
+    $("password").value = "";
+    status("No call. Speak English after you start the call.");
+  } catch (error) { status(error.message, true); }
+});
+$("guest").addEventListener("click", () => { $("login").hidden = true; });
+$("logout").addEventListener("click", async () => { await api("/api/logout", { session_id: sessionId }); await newSession(); });
+$("start").addEventListener("click", startCall);
+$("end").addEventListener("click", () => endCall("You ended the call."));
+
+(async () => {
+  await newSession();
+  await loadCalls();
+})();
+</script>
+</body>
+</html>

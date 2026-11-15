@@ -64,7 +64,7 @@ async def test_hung_turn_fails_with_timeout():
     import asyncio
 
     class HangingLlm:
-        async def stream(self, model, messages, tools):
+        async def stream(self, model, messages, tools, reasoning_effort=None):
             await asyncio.sleep(10)
             yield None
 
@@ -74,3 +74,19 @@ async def test_hung_turn_fails_with_timeout():
                             live={}, turn_timeout_s=0.2)
     assert not result.passed
     assert "timed out" in result.failures[0]
+
+
+def test_check_turn_number_does_not_match_a_longer_number():
+    expect = {"answer_contains_any": ["270"]}
+    assert check_turn(expect, [ev("answer", text="The total is 2700 taka.")], {}) != []
+    assert check_turn(expect, [ev("answer", text="The total is 1270 taka.")], {}) != []
+    assert check_turn(expect, [ev("answer", text="The total is 270 taka.")], {}) == []
+    assert check_turn(expect, [ev("answer", text="Total: ৳270.")], {}) == []
+
+
+def test_check_turn_answer_contains_all():
+    expect = {"answer_contains_all": ["150", "270"]}
+    good = [ev("answer", text="Delivery 150 taka, total 270 taka.")]
+    assert check_turn(expect, good, {}) == []
+    failures = check_turn(expect, [ev("answer", text="Delivery 15 taka, total 270 taka.")], {})
+    assert failures == ["answer does not have: 150"]

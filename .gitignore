@@ -11,3 +11,4 @@ wheels/
 .superpowers/
 .env
 reports/*.json
+bench-audio/
