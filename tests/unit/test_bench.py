@@ -58,3 +58,19 @@ def test_parse_footprint_reads_current_and_peak():
     text = "ollama [1]: 64-bit\n    phys_footprint: 12836802832 B\n    phys_footprint_peak: 14843433256 B\n"
     assert parse_footprint(text) == (12836802832, 14843433256)
     assert parse_footprint("nothing") == (0, 0)
+
+
+async def test_hung_turn_fails_with_timeout():
+    import asyncio
+
+    class HangingLlm:
+        async def stream(self, model, messages, tools):
+            await asyncio.sleep(10)
+            yield None
+
+    case = Case(id="h", language="en", login="none", channel="chat",
+                turns=[{"user": "hi", "expect": {}}])
+    result = await run_case(case, "m", FakeStore(), HangingLlm(), max_tool_rounds=6, run_id="r",
+                            live={}, turn_timeout_s=0.2)
+    assert not result.passed
+    assert "timed out" in result.failures[0]

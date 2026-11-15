@@ -107,8 +107,16 @@ async def _live_prices(store, cases: list[Case]) -> dict[str, int]:
     return prices
 
 
+TURN_TIMEOUT_S = 120
+
+
+async def _collect(session, text, llm, runner, model, max_tool_rounds) -> list[AgentEvent]:
+    return [e async for e in run_turn(session, text, llm, runner, model, max_tool_rounds)]
+
+
 async def run_case(case: Case, model: str, store, llm, max_tool_rounds: int, run_id: str,
-                   live: dict[str, int] | None = None) -> CaseResult:
+                   live: dict[str, int] | None = None,
+                   turn_timeout_s: float = TURN_TIMEOUT_S) -> CaseResult:
     live = live if live is not None else await _live_prices(store, [case])
     identity = Identity.guest()
     if case.login in LOGINS:
@@ -118,9 +126,15 @@ async def run_case(case: Case, model: str, store, llm, max_tool_rounds: int, run
     result = CaseResult(case.id, case.language, True)
     for number, turn in enumerate(case.turns, start=1):
         text = turn["user"].replace("{bench_email}", f"bench-{run_id}@example.com")
-        events = [e async for e in run_turn(session, text, llm, ToolRunner(store, session), model,
-                                            max_tool_rounds)]
-        failures = check_turn(turn.get("expect", {}), events, live)
+        try:
+            events = await asyncio.wait_for(
+                _collect(session, text, llm, ToolRunner(store, session), model, max_tool_rounds),
+                turn_timeout_s,
+            )
+            failures = check_turn(turn.get("expect", {}), events, live)
+        except TimeoutError:
+            events = []
+            failures = [f"turn timed out after {turn_timeout_s} s"]
         first = next((e.data["ms"] for e in events if e.type == "first_token"), None)
         answer = next((e.data["text"] for e in events if e.type == "answer"), "")
         result.turns.append({
@@ -262,7 +276,8 @@ async def main_async(args) -> int:
     results = []
     for case in cases:
         result = await run_case(case, args.model, store, llm, settings.max_tool_rounds, run_id, live)
-        print(f"{'pass' if result.passed else 'FAIL'}  {case.id}  {'; '.join(result.failures)}")
+        print(f"{'pass' if result.passed else 'FAIL'}  {case.id}  {'; '.join(result.failures)}",
+              flush=True)
         results.append(result)
     await poller.stop()
     await store.aclose()
