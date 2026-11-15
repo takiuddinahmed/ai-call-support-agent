@@ -9,7 +9,7 @@ The call numbers come from one run for each sample rate. Each run has 5 calls an
 - The pause median is 3.37 s on turns without tools. The goal is 1.5 s or less. The goal is missed.
 - The model is the slowest step. The first model token takes about 70 percent of the pause.
 - Only 2 of 5 calls passed. The calls found real problems. See "Findings".
-- The Whisper default is now `mlx-community/whisper-small-mlx`.
+- The Whisper default was `mlx-community/whisper-small-mlx` after this report. Task 11 changed it back to `mlx-community/whisper-large-v3-turbo`. See "Whisper default change in Task 11".
 
 ## Pause
 
@@ -67,6 +67,10 @@ The rule is to pick the fastest model with a normalized error of 0.10 or less. T
 The gap between the small model (0.064) and the turbo model (0.059) is inside the noise of 128 clips. Phone numbers (0.147 for distil) and addresses (0.199 for distil) are the hardest groups.
 
 The full call benchmark ran with the turbo model, because the default changed after the run. Run it again with the small model to confirm the numbers.
+
+## Whisper default change in Task 11
+
+Task 11 ran the full call benchmark two times at 16 kHz with the small model. The reports are `2026-11-15-voice-calls-16000-task11-a.md` and `2026-11-15-voice-calls-16000-task11-b-none.md`. The caller said the phone number "0 1 8 1 1 1 1 1 1 1 1". In 3 calls of each run, the small model heard "0181111111" (10 digits). Then the order lookup failed, or the agent asked for the phone again. The turbo run in this report heard 11 digits. Correctness is more important than 0.12 s of Whisper time. So `voice_stt_model` now defaults to `mlx-community/whisper-large-v3-turbo` again.
 
 ## Memory
 

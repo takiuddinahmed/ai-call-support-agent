@@ -7,6 +7,8 @@ from functools import lru_cache
 from pydantic import AliasChoices, Field
 from pydantic_settings import BaseSettings, SettingsConfigDict
 
+from support_agent.history import DEFAULT_MAX_PROMPT_TOKENS
+
 
 class Settings(BaseSettings):
     model_config = SettingsConfigDict(env_file=".env", extra="ignore")
@@ -31,13 +33,14 @@ class Settings(BaseSettings):
     # uses llm_reasoning_effort. See reports/2026-11-15-task-11-context-and-effort.md.
     llm_reasoning_effort_after_tools: str = ""
     # The prompt budget in estimated tokens (about 3 characters for each token, see
-    # history.py). It must stay under the model context: Ollama uses 4096 tokens by default.
-    # The default keeps about 1400 tokens free for the thinking and the answer.
-    max_prompt_tokens: int = 3200
+    # history.py). It must stay under the model context. Ollama uses 4096 tokens by default.
+    max_prompt_tokens: int = DEFAULT_MAX_PROMPT_TOKENS
     max_tool_rounds: int = 6
     catalog_cache_seconds: int = 300
     # Voice channel. The speech benchmark can change the models.
-    voice_stt_model: str = "mlx-community/whisper-small-mlx"
+    # Whisper turbo, not small: in the Task 11 call runs, small heard the phone number
+    # "0 1 8 1 1 1 1 1 1 1 1" with 10 digits in 3 calls. Turbo heard 11 digits.
+    voice_stt_model: str = "mlx-community/whisper-large-v3-turbo"
     voice_tts_voice: str = "af_heart"
     voice_asterisk_path: str = "/api/voice/asterisk"
     # Shared secret of the phone route (env AGENT_PHONE_TOKEN). Asterisk sends it as the

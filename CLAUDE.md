@@ -81,7 +81,7 @@ These rules come from the design in `docs/superpowers/specs/2026-11-15-chat-agen
 
 ## Voice measurements
 
-The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s). In one browser call, the first model token took about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-small-mlx`. Known problems follow. The turn-end model splits a turn at a pause inside a sentence. Whisper can mishear city names.
+The starting numbers are in `reports/2026-11-15-voice-baseline.md`. The pause median is 3.37 s (goal 1.5 s). In one browser call, the first model token took about 70 percent of the pause. The default Whisper model is `mlx-community/whisper-large-v3-turbo`. The small model dropped phone number digits in the Task 11 call runs. Known problems follow. The turn-end model splits a turn at a pause inside a sentence. Whisper can mishear city names.
 
 ## Tests
 

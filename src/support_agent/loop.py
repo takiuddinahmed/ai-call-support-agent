@@ -12,7 +12,12 @@ from zoneinfo import ZoneInfo
 import httpx
 import openai
 
-from support_agent.history import estimate_tokens, fit_history, messages_tokens
+from support_agent.history import (
+    DEFAULT_MAX_PROMPT_TOKENS,
+    estimate_tokens,
+    fit_history,
+    messages_tokens,
+)
 from support_agent.instructions import build_instructions
 from support_agent.llm import LlmClient
 from support_agent.session import Session
@@ -35,11 +40,6 @@ NOT_RUN_MESSAGE = "Not run: the customer interrupted."
 # The agent says this line if a model call gives no text and no tool call.
 EMPTY_ANSWER_FALLBACK = "Sorry, I did not get that. Can you say it again?"
 EMPTY_ANSWER_ERROR = "The model gave an empty answer. The agent said the fallback line."
-
-# The default prompt budget, in estimated tokens (see history.py). It is for the Ollama
-# context of 4096 tokens. The estimate is a little too high, so the real prompt is about
-# 2700 tokens, and about 1400 tokens stay for the hidden thinking and the answer.
-DEFAULT_MAX_PROMPT_TOKENS = 3200
 
 
 @dataclass
@@ -180,6 +180,11 @@ async def run_turn(
         if not text and (not calls or final_round):
             # For example, the hidden thinking filled the model context.
             yield event("error", message=EMPTY_ANSWER_ERROR, round=round_no, fallback=True)
+            # The customer gets only the fallback line, not an order summary from this turn.
+            # So a later "yes" must not place that summary.
+            for summary_id in [s.id for s in session.summaries.values()
+                               if s.customer_turn_at_creation == session.customer_turns]:
+                del session.summaries[summary_id]
             text = EMPTY_ANSWER_FALLBACK
             yield event("text", text=text)
         if not calls or final_round:

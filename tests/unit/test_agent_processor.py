@@ -221,6 +221,18 @@ async def test_heard_after_filler_audio_and_full_answer():
     assert ("heard", 1) in [(k, d.get("turn")) for k, d in setup.events]
 
 
+async def test_fallback_answer_leaves_no_heard_summary():
+    # Round 2 is empty, so the caller hears only the fallback line, not the summary.
+    setup = Setup(FakeLlm([[("prepare_order", PREPARE)], ""]))
+    await setup.run([
+        said("order one esp32"), SleepFrame(0.3),
+        *audio_pair(),  # the filler audio
+        *audio_pair(),  # the fallback audio
+    ])
+    assert setup.session.summaries == {}
+    assert not any(k == "heard" and d.get("summary_ids") for k, d in setup.events)
+
+
 async def test_interrupted_summary_is_not_heard(monkeypatch):
     monkeypatch.setattr("support_agent.tools.uuid.uuid4", lambda: uuid.UUID(int=0))
     place = json.dumps({"summary_id": "00000000"})

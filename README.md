@@ -158,7 +158,7 @@ ollama stop <model>
 | `CATALOG_CACHE_SECONDS` | `300` | How long the agent keeps the product list |
 | `AGENT_PHONE_TOKEN` | empty | Shared secret of the Asterisk phone route. Use the same value in `../demo-store/.env`. Empty refuses every phone call. |
 | `MAX_CALL_SECONDS` | `900` | The agent hangs up a phone call after this time |
-| `VOICE_STT_MODEL` | `mlx-community/whisper-small-mlx` | The Whisper model for speech-to-text |
+| `VOICE_STT_MODEL` | `mlx-community/whisper-large-v3-turbo` | The Whisper model for speech-to-text |
 | `VOICE_TTS_VOICE` | `af_heart` | The Kokoro voice of the agent |
 | `VOICE_ASTERISK_PATH` | `/api/voice/asterisk` | The WebSocket path for phone calls |
 | `ALLOWED_HOSTS` | `["localhost","127.0.0.1","host.docker.internal"]` | Host names that the server accepts |

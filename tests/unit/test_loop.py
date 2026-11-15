@@ -231,3 +231,26 @@ async def test_long_conversation_prompt_stays_under_the_budget():
             assert estimate_tokens(json.dumps(tools)) + messages_tokens(sent) <= budget
             assert_history_valid(sent[1:])
     assert len(session.messages) == 30 * 4
+
+
+async def test_fallback_after_prepare_order_removes_the_summary():
+    store = FakeStore()
+    session = Session.new(Identity(kind="customer", token="tok", customer=RAHIM), "chat")
+    prepare = json.dumps({"items": [{"handle": "esp32-devkit-v1", "quantity": 2}]})
+    llm = FakeLlm([[("prepare_order", prepare)], ""])
+    events = await collect_with(session, llm, ToolRunner(store, session), "order two esp32")
+    assert events[-1].data["text"] == EMPTY_ANSWER_FALLBACK
+    # The customer did not see the summary, so a later "yes" must not place it.
+    assert session.summaries == {}
+
+
+async def test_fallback_keeps_a_summary_from_an_earlier_turn():
+    store = FakeStore()
+    session, summary_id = await customer_with_summary(store)
+    events = await collect_with(session, FakeLlm([""]), ToolRunner(store, session), "hmm")
+    assert events[-1].data["text"] == EMPTY_ANSWER_FALLBACK
+    assert list(session.summaries) == [summary_id]
+
+
+async def collect_with(session, llm, runner, text):
+    return [e async for e in run_turn(session, text, llm, runner, "m", 6)]

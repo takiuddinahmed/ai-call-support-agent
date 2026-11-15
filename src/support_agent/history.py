@@ -31,6 +31,12 @@ from dataclasses import dataclass
 ASCII_CHARS_PER_TOKEN = 3
 OTHER_CHARS_PER_TOKEN = 1.5
 
+# The default prompt budget, in estimated tokens. It is for the Ollama context of 4096
+# tokens. The estimate is a little too high, so the real prompt is about 2700 tokens, and
+# about 1400 tokens stay for the hidden thinking and the answer. config.py and loop.py
+# use this value.
+DEFAULT_MAX_PROMPT_TOKENS = 3200
+
 OLD_TOOL_RESULT_NOTE = (
     "Old tool result removed to save space. Call the tool again if you need these facts."
 )
