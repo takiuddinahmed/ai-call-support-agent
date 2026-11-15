@@ -341,8 +341,11 @@ class ToolRunner:
         customer = self.session.identity.customer
         base = customer.default_address if customer else None
         fields = {
-            "first_name": given.get("first_name") or (base.first_name if base else ""),
-            "last_name": given.get("last_name") or (base.last_name if base else ""),
+            # The account name is the fallback, because an account can have no saved address.
+            "first_name": given.get("first_name") or (base.first_name if base else "")
+            or (customer.first_name if customer else ""),
+            "last_name": given.get("last_name") or (base.last_name if base else "")
+            or (customer.last_name if customer else ""),
             "address_1": given.get("address_1") or (base.address_1 if base else ""),
             "city": given.get("city") or (base.city if base else ""),
             "postal_code": given.get("postal_code") or (base.postal_code if base else ""),
@@ -355,7 +358,17 @@ class ToolRunner:
         if not final_email and not voice_email:
             missing.append("email")
         if missing:
-            raise ToolError(f"Ask the customer for: {', '.join(missing)}.")
+            names = {"first_name": "name", "address_1": "address", "city": "city",
+                     "phone": "phone number", "email": "email"}
+            account = ""
+            if customer and base is None:
+                account = ("The account has no saved address, but it has the other details. "
+                           "Do not ask for them. ")
+            raise ToolError(
+                f"The items are fine, but the delivery details are missing. {account}Ask the "
+                f"customer only for the {', '.join(names[k] for k in missing)}. Then call "
+                "prepare_order again with the same items and the details."
+            )
         if not _is_bd_mobile(fields["phone"]):
             raise ToolError("The phone must be a Bangladesh mobile number, for example 01712345678.")
         if voice_email:

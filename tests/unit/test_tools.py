@@ -270,3 +270,24 @@ async def test_voice_guest_order_without_email_uses_phone_email():
 async def test_chat_guest_order_without_email_still_asks_for_email():
     ok, message = await run(guest(), FakeStore(), "prepare_order", items=[ITEM], address=GUEST_ADDRESS)
     assert not ok and "email" in message
+
+
+async def test_account_without_an_address_gives_its_name_and_phone():
+    from dataclasses import replace
+
+    no_address = replace(RAHIM, default_address=None)
+    session = Session.new(Identity(kind="customer", token="tok", customer=no_address), "voice")
+    store = FakeStore()
+    items = [{"handle": "esp32-devkit-v1", "quantity": 1}]
+    ok, content = await run(session, store, "prepare_order", items=items)
+    assert not ok
+    # Only the address is missing. The account has the name and the phone.
+    assert "address, city" in content
+    assert "name" not in content and "phone" not in content
+    assert "no saved address" in content
+    ok, summary = await run(session, store, "prepare_order", items=items,
+                            address={"address_1": "Road 5, Mirpur", "city": "Dhaka"})
+    assert ok, summary
+    assert summary["address"]["first_name"] == "Rahim"
+    assert summary["address"]["last_name"] == "Uddin"
+    assert summary["address"]["phone"] == "+8801711000001"
