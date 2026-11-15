@@ -1,0 +1,70 @@
+# Scripted calls for the full voice pipeline benchmark.
+# The shape and the checks are the same as the chat benchmark cases (src/support_agent/bench/cases).
+#
+# Kokoro speaks the "user" text as the caller. Rules for the caller text:
+# - Write phone numbers digit by digit, so that the caller voice says each digit.
+# - Give one fact in one short turn, as a caller does on a phone call. Smart turn ends a turn
+#   at a pause, and Kokoro pauses inside a long sentence. Then the agent answers only the
+#   first part of the turn (the report calls this a split turn).
+# - "{bench_order}" becomes the number of the order that an earlier call of the run placed.
+#
+# The guest order uses the benchmark email bench-<run id>@example.com. The benchmark sets it in
+# place of the voice guest placeholder email. Never place an order as a sample customer.
+- id: voice-product-question
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Hello can you help me find a part?
+      expect:
+        tools_not_called: [prepare_order, place_order]
+    - user: How much is the ESP32 DevKit?
+      expect:
+        tools_called: [search_products]
+        answer_contains_any: ["{live:price:esp32-devkit-v1}"]
+        tools_not_called: [prepare_order, place_order]
+    - user: Okay thank you that is all for now.
+      expect:
+        tools_not_called: [prepare_order, place_order]
+- id: voice-guest-order-yes
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: I want to order one breadboard 830.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: My name is Karim Ali.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: The address is House 5 Road 2 in Sylhet.
+      expect:
+        tools_not_called: [place_order]
+        order_placed: false
+    - user: My phone number is 0 1 8 1 1 1 1 1 1 1 1.
+      expect:
+        tools_called: [prepare_order]
+        order_placed: false
+        answer_contains_any: ["270"]
+    - user: Yes please place the order.
+      expect:
+        order_placed: true
+# The guest checks the order that the call above placed, with the same phone number.
+- id: voice-guest-order-status
+  language: en
+  login: none
+  channel: voice
+  turns:
+    - user: Hi I want to check the status of my order.
+      expect:
+        tools_not_called: [get_order_status]
+        answer_contains_any: [phone, number]
+    - user: The order number is {bench_order}.
+      expect:
+        tools_not_called: [place_order]
+    - user: My phone number is 0 1 8 1 1 1 1 1 1 1 1.
+      expect:
+        tools_called: [get_order_status]
+        answer_contains_any: [pending, processing, placed, received, "not yet", confirmed]
