@@ -26,7 +26,13 @@ class LlmChunk:
 
 
 class LlmClient(Protocol):
-    def stream(self, model: str, messages: list[dict], tools: list[dict]) -> AsyncIterator[LlmChunk]:
+    def stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        reasoning_effort: str | None = None,
+    ) -> AsyncIterator[LlmChunk]:
         ...
 
 
@@ -35,10 +41,18 @@ class OpenAiCompatClient:
         self.settings = settings
         self._client = AsyncOpenAI(base_url=settings.llm_base_url, api_key=settings.llm_api_key)
 
-    async def stream(self, model: str, messages: list[dict], tools: list[dict]):
+    async def stream(
+        self,
+        model: str,
+        messages: list[dict],
+        tools: list[dict],
+        reasoning_effort: str | None = None,
+    ):
+        # None uses the configuration value. An empty value sends nothing.
+        effort = self.settings.llm_reasoning_effort if reasoning_effort is None else reasoning_effort
         extra = {}
-        if self.settings.llm_reasoning_effort:
-            extra["reasoning_effort"] = self.settings.llm_reasoning_effort
+        if effort:
+            extra["reasoning_effort"] = effort
         response = await self._client.chat.completions.create(
             model=model,
             messages=messages,

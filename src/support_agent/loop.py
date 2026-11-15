@@ -1,5 +1,6 @@
 """Runs one customer turn: model calls, tool calls, and timed events for the debug panel."""
 
+import asyncio
 import json
 import time
 from collections.abc import AsyncIterator
@@ -17,7 +18,7 @@ from support_agent.session import Session
 from support_agent.tools import TOOL_SPECS, ToolRunner
 
 EventType = Literal[
-    "turn_start", "llm_start", "first_token", "text", "llm_end",
+    "turn_start", "llm_start", "first_token", "text", "tool_call_start", "llm_end",
     "tool_start", "tool_end", "answer", "error",
 ]
 
@@ -26,6 +27,9 @@ FINAL_ROUND_NOTE = (
     "Answer now with the information from the tool results above. Do not call tools. "
     "If something is missing, say so and ask the customer one short question."
 )
+
+# The tool result for a tool call that did not run because the customer interrupted the turn.
+NOT_RUN_MESSAGE = "Not run: the customer interrupted."
 
 
 @dataclass
@@ -47,6 +51,10 @@ def _error_message(error: Exception) -> str:
     return f"The model call failed: {error}"
 
 
+def _add_tool_message(session: Session, call_id: str, content: str) -> None:
+    session.messages.append({"role": "tool", "tool_call_id": call_id, "content": content})
+
+
 async def run_turn(
     session: Session,
     user_text: str,
@@ -60,6 +68,10 @@ async def run_turn(
     def event(kind: EventType, **data) -> AgentEvent:
         return AgentEvent(kind, (time.perf_counter() - start) * 1000, data)
 
+    # Cancel safety: a cancel (asyncio.CancelledError) can stop the turn at any await.
+    # The turn then keeps session.messages valid for the next turn:
+    # a cancel during a model stream drops the partial text of that round, and
+    # every assistant tool call gets one tool message.
     session.customer_turns += 1
     session.messages.append({"role": "user", "content": user_text})
     yield event("turn_start", model=model, channel=session.channel)
@@ -79,6 +91,7 @@ async def run_turn(
         text_parts: list[str] = []
         calls: dict[int, dict] = {}
         usage: dict | None = None
+        started: set[int] = set()
         try:
             async for chunk in llm.stream(model, messages, [] if final_round else TOOL_SPECS):
                 if first_token_ms is None and (chunk.text or chunk.tool_calls):
@@ -92,6 +105,9 @@ async def run_turn(
                     call["id"] = delta.id or call["id"]
                     call["name"] += delta.name or ""
                     call["arguments"] += delta.arguments or ""
+                    if call["name"] and delta.index not in started:
+                        started.add(delta.index)
+                        yield event("tool_call_start", name=call["name"], round=round_no)
                 if chunk.usage:
                     usage = chunk.usage
         except Exception as error:  # noqa: BLE001  any model failure ends the turn with one event
@@ -135,11 +151,25 @@ async def run_turn(
                 for c in ordered
             ],
         })
-        for call in ordered:
-            yield event("tool_start", name=call["name"], arguments=call["arguments"])
-            result = await runner.run(call["name"], call["arguments"])
-            session.messages.append(
-                {"role": "tool", "tool_call_id": call["id"], "content": result.content}
-            )
-            yield event("tool_end", name=call["name"], ok=result.ok, content=result.content,
-                        ms=round(result.ms, 1))
+        answered = 0
+        try:
+            for call in ordered:
+                yield event("tool_start", name=call["name"], arguments=call["arguments"])
+                # The shield lets a started tool finish after a cancel, so that its result
+                # (for example a placed order) goes into the history.
+                tool = asyncio.ensure_future(runner.run(call["name"], call["arguments"]))
+                try:
+                    result = await asyncio.shield(tool)
+                except asyncio.CancelledError:
+                    result = await tool
+                    _add_tool_message(session, call["id"], result.content)
+                    answered += 1
+                    raise
+                _add_tool_message(session, call["id"], result.content)
+                answered += 1
+                yield event("tool_end", name=call["name"], ok=result.ok, content=result.content,
+                            ms=round(result.ms, 1))
+        finally:
+            # If the turn stops early, the calls that did not run get a tool message too.
+            for call in ordered[answered:]:
+                _add_tool_message(session, call["id"], NOT_RUN_MESSAGE)
